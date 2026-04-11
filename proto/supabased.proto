@@ -1,0 +1,14 @@
+syntax = "proto3";
+package supabased;
+
+service Supabased {
+  rpc WhoAmI (WhoAmIRequest) returns (WhoAmIResponse);
+}
+
+message WhoAmIRequest {}
+
+message WhoAmIResponse {
+  string identity = 1;
+  repeated string permissions = 2;
+  repeated string accessible_branches = 3;
+}

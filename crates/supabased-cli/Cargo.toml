@@ -1,0 +1,14 @@
+[package]
+name = "supabased-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "supabased"
+path = "src/main.rs"
+
+[dependencies]
+supabased-proto.workspace = true
+tonic.workspace = true
+tokio.workspace = true
+clap.workspace = true

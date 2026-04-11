@@ -1,0 +1,6 @@
+/target
+
+# Riptide artifacts (cloud-synced)
+.humanlayer/tasks/
+
+SPEC.md

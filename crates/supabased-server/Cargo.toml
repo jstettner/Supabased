@@ -1,0 +1,9 @@
+[package]
+name = "supabased-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+supabased-proto.workspace = true
+tonic.workspace = true
+tokio.workspace = true
