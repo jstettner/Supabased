@@ -15,11 +15,12 @@ use crate::github;
 pub struct SupabasedService {
     pub db: Connection,
     pub jwt_secret: Vec<u8>,
+    pub github_org: String,
 }
 
 impl SupabasedService {
-    pub fn new(db: Connection, jwt_secret: Vec<u8>) -> Self {
-        Self { db, jwt_secret }
+    pub fn new(db: Connection, jwt_secret: Vec<u8>, github_org: String) -> Self {
+        Self { db, jwt_secret, github_org }
     }
 }
 
@@ -52,6 +53,7 @@ impl Supabased for SupabasedService {
         let identity = match method {
             Method::GithubToken(token) => {
                 let user = github::validate_token(&token).await?;
+                github::check_org_membership(&token, &self.github_org, &user.login).await?;
                 format!("github:{}", user.login)
             }
             Method::ApiKey(_) => {
