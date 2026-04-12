@@ -3,7 +3,7 @@ mod auth;
 mod github;
 mod service;
 
-use tonic::transport::Server;
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 
 use supabased_proto::supabased::supabased_server::SupabasedServer;
 use service::SupabasedService;
@@ -25,9 +25,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let svc = SupabasedService::new(conn, jwt_secret.clone(), github_org);
     let interceptor = make_interceptor(jwt_secret);
 
-    println!("Server listening on {addr}");
+    let mut server = Server::builder();
 
-    Server::builder()
+    let tls_cert = std::env::var("TLS_CERT").ok();
+    let tls_key = std::env::var("TLS_KEY").ok();
+
+    match (&tls_cert, &tls_key) {
+        (Some(cert_path), Some(key_path)) => {
+            let cert = std::fs::read(cert_path).unwrap_or_else(|e| {
+                eprintln!("error: failed to read TLS cert at {cert_path}: {e}");
+                std::process::exit(1);
+            });
+            let key = std::fs::read(key_path).unwrap_or_else(|e| {
+                eprintln!("error: failed to read TLS key at {key_path}: {e}");
+                std::process::exit(1);
+            });
+
+            let tls_config = ServerTlsConfig::new().identity(Identity::from_pem(cert, key));
+            server = server.tls_config(tls_config)?;
+
+            println!("Server listening on {addr} (TLS)");
+        }
+        (None, None) => {
+            println!("Server listening on {addr} (plaintext)");
+        }
+        _ => {
+            eprintln!("error: both TLS_CERT and TLS_KEY must be set, or neither");
+            std::process::exit(1);
+        }
+    }
+
+    server
         .add_service(SupabasedServer::with_interceptor(svc, interceptor))
         .serve(addr)
         .await?;

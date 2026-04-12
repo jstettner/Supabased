@@ -1,6 +1,7 @@
 mod session;
 
 use clap::{Parser, Subcommand};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 use supabased_proto::supabased::supabased_client::SupabasedClient;
 use supabased_proto::supabased::{AuthRequest, WhoAmIRequest, auth_request::Method};
@@ -10,6 +11,10 @@ use supabased_proto::supabased::{AuthRequest, WhoAmIRequest, auth_request::Metho
 struct Cli {
     #[arg(long, default_value = "http://[::1]:50051", global = true)]
     server: String,
+
+    /// Path to a PEM CA certificate for verifying the server (for self-signed certs)
+    #[arg(long, global = true)]
+    ca_cert: Option<String>,
 
     #[command(subcommand)]
     command: Commands,
@@ -23,9 +28,38 @@ enum Commands {
     Login,
 }
 
+async fn connect(
+    server: &str,
+    ca_cert: Option<&str>,
+) -> Result<SupabasedClient<Channel>, Box<dyn std::error::Error>> {
+    let channel = if server.starts_with("https://") {
+        let mut tls_config = ClientTlsConfig::new();
+
+        if let Some(ca_path) = ca_cert {
+            let ca_pem = std::fs::read(ca_path)?;
+            tls_config = tls_config.ca_certificate(Certificate::from_pem(ca_pem));
+        } else {
+            tls_config = tls_config.with_native_roots();
+        }
+
+        Endpoint::from_shared(server.to_string())?
+            .tls_config(tls_config)?
+            .connect()
+            .await?
+    } else {
+        Endpoint::from_shared(server.to_string())?
+            .connect()
+            .await?
+    };
+
+    Ok(SupabasedClient::new(channel))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    let server = &cli.server;
+    let ca_cert = cli.ca_cert.as_deref();
 
     match cli.command {
         Commands::Login => {
@@ -38,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Call Authenticate RPC
-            let mut client = SupabasedClient::connect(cli.server).await?;
+            let mut client = connect(server, ca_cert).await?;
             let response = client
                 .authenticate(tonic::Request::new(AuthRequest {
                     method: Some(Method::GithubToken(token)),
@@ -67,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             });
 
-            let mut client = SupabasedClient::connect(cli.server).await?;
+            let mut client = connect(server, ca_cert).await?;
 
             let mut request = tonic::Request::new(WhoAmIRequest {});
             request.metadata_mut().insert(

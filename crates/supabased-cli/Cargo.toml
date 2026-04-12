@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 supabased-proto.workspace = true
-tonic.workspace = true
+tonic = { workspace = true, features = ["tls-ring", "tls-native-roots"] }
 tokio.workspace = true
 clap.workspace = true
 dirs.workspace = true

@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 supabased-proto.workspace = true
-tonic.workspace = true
+tonic = { workspace = true, features = ["tls-ring"] }
 tokio.workspace = true
 tokio-rusqlite.workspace = true
 rusqlite_migration.workspace = true
