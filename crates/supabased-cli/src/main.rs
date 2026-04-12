@@ -1,4 +1,7 @@
+mod config;
 mod session;
+
+use std::io::{self, Write};
 
 use clap::{Parser, Subcommand};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
@@ -9,8 +12,8 @@ use supabased_proto::supabased::{AuthRequest, WhoAmIRequest, auth_request::Metho
 #[derive(Debug, Parser)]
 #[command(name = "supabased", version, about = "Supabased CLI")]
 struct Cli {
-    #[arg(long, default_value = "http://[::1]:50051", global = true)]
-    server: String,
+    #[arg(long, global = true)]
+    server: Option<String>,
 
     /// Path to a PEM CA certificate for verifying the server (for self-signed certs)
     #[arg(long, global = true)]
@@ -58,11 +61,30 @@ async fn connect(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let server = &cli.server;
-    let ca_cert = cli.ca_cert.as_deref();
+    let cfg = config::load_config();
+    let ca_cert = cli.ca_cert.or(cfg.ca_cert.clone());
 
     match cli.command {
         Commands::Login => {
+            // Prompt for server URL
+            let current_server = cli.server
+                .as_deref()
+                .or(cfg.server_url.as_deref())
+                .unwrap_or("http://[::1]:50051");
+            eprint!("Server URL [{current_server}]: ");
+            io::stderr().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim();
+
+            let server = if input.is_empty() { current_server } else { input };
+
+            config::save_config(&config::Config {
+                server_url: Some(server.to_string()),
+                ca_cert: cfg.ca_cert,
+            })?;
+
             // Prompt for GitHub PAT
             let token = rpassword::prompt_password("Enter your GitHub personal access token: ")?;
 
@@ -72,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Call Authenticate RPC
-            let mut client = connect(server, ca_cert).await?;
+            let mut client = connect(server, ca_cert.as_deref()).await?;
             let response = client
                 .authenticate(tonic::Request::new(AuthRequest {
                     method: Some(Method::GithubToken(token)),
@@ -101,7 +123,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             });
 
-            let mut client = connect(server, ca_cert).await?;
+            let server = cli.server
+                .as_deref()
+                .or(cfg.server_url.as_deref())
+                .unwrap_or("http://[::1]:50051");
+            let mut client = connect(server, ca_cert.as_deref()).await?;
 
             let mut request = tonic::Request::new(WhoAmIRequest {});
             request.metadata_mut().insert(
