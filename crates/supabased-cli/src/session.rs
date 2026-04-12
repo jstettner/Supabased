@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,5 +49,6 @@ pub fn save_session(session: &Session) -> Result<(), Box<dyn std::error::Error>>
     }
     let json = serde_json::to_string_pretty(session)?;
     fs::write(&path, json)?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
