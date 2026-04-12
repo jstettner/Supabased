@@ -1,6 +1,7 @@
 mod db;
 mod auth;
 mod github;
+mod rate_limit;
 mod service;
 
 use tonic::transport::{Identity, Server, ServerTlsConfig};

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use tonic::{Request, Response, Status};
 use tokio_rusqlite::Connection;
 
@@ -11,16 +13,20 @@ use supabased_proto::supabased::{
 use crate::auth;
 use crate::auth::AuthContext;
 use crate::github;
+use crate::rate_limit::RateLimiter;
 
 pub struct SupabasedService {
     pub db: Connection,
     pub jwt_secret: Vec<u8>,
     pub github_org: String,
+    pub rate_limiter: RateLimiter,
 }
 
 impl SupabasedService {
     pub fn new(db: Connection, jwt_secret: Vec<u8>, github_org: String) -> Self {
-        Self { db, jwt_secret, github_org }
+        let rate_limiter = RateLimiter::new(5, Duration::from_secs(60));
+        rate_limiter.spawn_cleanup_task();
+        Self { db, jwt_secret, github_org, rate_limiter }
     }
 }
 
@@ -45,6 +51,10 @@ impl Supabased for SupabasedService {
         &self,
         request: Request<AuthRequest>,
     ) -> Result<Response<AuthResponse>, Status> {
+        if let Some(addr) = request.remote_addr() {
+            self.rate_limiter.check_rate_limit(addr.ip())?;
+        }
+
         let req = request.into_inner();
         let method = req.method.ok_or_else(|| {
             Status::invalid_argument("auth method required")
