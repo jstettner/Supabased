@@ -3,4 +3,6 @@
 # Riptide artifacts (cloud-synced)
 .humanlayer/tasks/
 
+supabased.db*
+
 SPEC.md
