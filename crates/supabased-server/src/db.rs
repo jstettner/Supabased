@@ -1,6 +1,6 @@
-use tokio_rusqlite::{Connection, OptionalExtension};
+use rusqlite_migration::{M, Migrations};
 use tokio_rusqlite::rusqlite;
-use rusqlite_migration::{Migrations, M};
+use tokio_rusqlite::{Connection, OptionalExtension};
 
 const MIGRATIONS: &[M<'static>] = &[M::up(
     "CREATE TABLE jwt_secrets (
@@ -47,7 +47,7 @@ pub async fn ensure_jwt_secret(conn: &Connection) -> Result<Vec<u8>, Box<dyn std
             }
 
             let mut secret = vec![0u8; 32];
-            rand::Rng::fill(&mut rand::thread_rng(), secret.as_mut_slice());
+            rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, secret.as_mut_slice());
             conn.execute(
                 "INSERT INTO jwt_secrets (id, secret) VALUES (1, ?1)",
                 [&secret],
