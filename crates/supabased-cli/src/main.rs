@@ -50,9 +50,7 @@ async fn connect(
             .connect()
             .await?
     } else {
-        Endpoint::from_shared(server.to_string())?
-            .connect()
-            .await?
+        Endpoint::from_shared(server.to_string())?.connect().await?
     };
 
     Ok(SupabasedClient::new(channel))
@@ -67,7 +65,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Login => {
             // Prompt for server URL
-            let current_server = cli.server
+            let current_server = cli
+                .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
                 .unwrap_or("http://[::1]:50051");
@@ -78,11 +77,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             io::stdin().read_line(&mut input)?;
             let input = input.trim();
 
-            let server = if input.is_empty() { current_server } else { input };
+            let server = if input.is_empty() {
+                current_server
+            } else {
+                input
+            };
 
             config::save_config(&config::Config {
                 server_url: Some(server.to_string()),
-                ca_cert: cfg.ca_cert,
+                ca_cert: ca_cert.clone(),
             })?;
 
             // Prompt for GitHub PAT
@@ -111,10 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             session::save_session(&sess)?;
 
             println!("Logged in as {}", reply.identity);
-            println!(
-                "Session stored at {}",
-                session::session_path().display()
-            );
+            println!("Session stored at {}", session::session_path().display());
         }
 
         Commands::Whoami => {
@@ -123,7 +123,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             });
 
-            let server = cli.server
+            let server = cli
+                .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
                 .unwrap_or("http://[::1]:50051");
