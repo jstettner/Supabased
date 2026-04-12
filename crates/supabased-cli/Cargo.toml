@@ -12,3 +12,6 @@ supabased-proto.workspace = true
 tonic.workspace = true
 tokio.workspace = true
 clap.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true

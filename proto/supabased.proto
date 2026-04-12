@@ -3,6 +3,7 @@ package supabased;
 
 service Supabased {
   rpc WhoAmI (WhoAmIRequest) returns (WhoAmIResponse);
+  rpc Authenticate (AuthRequest) returns (AuthResponse);
 }
 
 message WhoAmIRequest {}
@@ -11,4 +12,18 @@ message WhoAmIResponse {
   string identity = 1;
   repeated string permissions = 2;
   repeated string accessible_branches = 3;
+}
+
+message AuthRequest {
+  oneof method {
+    string github_token = 1;
+    string api_key = 2;
+  }
+}
+
+message AuthResponse {
+  string session_token = 1;
+  string identity = 2;
+  repeated string permissions = 3;
+  int64 expires_at = 4;
 }
