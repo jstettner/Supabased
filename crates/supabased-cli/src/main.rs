@@ -60,7 +60,7 @@ async fn connect(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let cfg = config::load_config();
-    let ca_cert = cli.ca_cert.or(cfg.ca_cert.clone());
+    let ca_cert = cli.ca_cert.or(cfg.ca_cert);
 
     match cli.command {
         Commands::Login => {
@@ -83,11 +83,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 input
             };
 
-            config::save_config(&config::Config {
-                server_url: Some(server.to_string()),
-                ca_cert: ca_cert.clone(),
-            })?;
-
             // Prompt for GitHub PAT
             let token = rpassword::prompt_password("Enter your GitHub personal access token: ")?;
 
@@ -105,7 +100,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?;
             let reply = response.into_inner();
 
-            // Save session
+            // Save config and session
+            config::save_config(&config::Config {
+                server_url: Some(server.to_string()),
+                ca_cert,
+            })?;
+
             let sess = session::Session {
                 session_token: reply.session_token,
                 identity: reply.identity.clone(),
