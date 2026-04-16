@@ -8,6 +8,11 @@ use supabased_proto::supabased::{
     AuthRequest, AuthResponse,
     WhoAmIRequest, WhoAmIResponse,
     auth_request::Method,
+    ListProjectsRequest, ListProjectsResponse,
+    CreateBranchRequest, CreateBranchResponse,
+    ListBranchesRequest, ListBranchesResponse,
+    DeleteBranchRequest, DeleteBranchResponse,
+    GetBranchCredentialsRequest, BranchCredentials,
 };
 
 use crate::auth;
@@ -99,5 +104,40 @@ impl Supabased for SupabasedService {
             permissions,
             expires_at,
         }))
+    }
+
+    async fn list_projects(
+        &self,
+        _request: Request<ListProjectsRequest>,
+    ) -> Result<Response<ListProjectsResponse>, Status> {
+        Err(Status::unimplemented("not yet implemented"))
+    }
+
+    async fn create_branch(
+        &self,
+        _request: Request<CreateBranchRequest>,
+    ) -> Result<Response<CreateBranchResponse>, Status> {
+        Err(Status::unimplemented("not yet implemented"))
+    }
+
+    async fn list_branches(
+        &self,
+        _request: Request<ListBranchesRequest>,
+    ) -> Result<Response<ListBranchesResponse>, Status> {
+        Err(Status::unimplemented("not yet implemented"))
+    }
+
+    async fn delete_branch(
+        &self,
+        _request: Request<DeleteBranchRequest>,
+    ) -> Result<Response<DeleteBranchResponse>, Status> {
+        Err(Status::unimplemented("not yet implemented"))
+    }
+
+    async fn get_branch_credentials(
+        &self,
+        _request: Request<GetBranchCredentialsRequest>,
+    ) -> Result<Response<BranchCredentials>, Status> {
+        Err(Status::unimplemented("not yet implemented"))
     }
 }
