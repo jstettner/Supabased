@@ -12,21 +12,31 @@ use supabased_proto::supabased::{
 
 use crate::auth;
 use crate::auth::AuthContext;
+use crate::config::ServerConfig;
 use crate::github;
 use crate::rate_limit::RateLimiter;
+use crate::supabase::SupabaseClient;
 
 pub struct SupabasedService {
     pub db: Connection,
     pub jwt_secret: Vec<u8>,
     pub github_org: String,
     pub rate_limiter: RateLimiter,
+    pub supabase_client: SupabaseClient,
+    pub config: ServerConfig,
 }
 
 impl SupabasedService {
-    pub fn new(db: Connection, jwt_secret: Vec<u8>, github_org: String) -> Self {
+    pub fn new(
+        db: Connection,
+        jwt_secret: Vec<u8>,
+        github_org: String,
+        supabase_client: SupabaseClient,
+        config: ServerConfig,
+    ) -> Self {
         let rate_limiter = RateLimiter::new(5, Duration::from_secs(60));
         rate_limiter.spawn_cleanup_task();
-        Self { db, jwt_secret, github_org, rate_limiter }
+        Self { db, jwt_secret, github_org, rate_limiter, supabase_client, config }
     }
 }
 

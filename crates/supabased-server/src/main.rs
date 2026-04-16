@@ -3,6 +3,8 @@ mod auth;
 mod github;
 mod rate_limit;
 mod service;
+mod config;
+mod supabase;
 
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 
@@ -22,8 +24,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     });
 
+    let supabase_token = std::env::var("SUPABASE_ACCESS_TOKEN").unwrap_or_else(|_| {
+        eprintln!("error: SUPABASE_ACCESS_TOKEN environment variable is required but not set");
+        std::process::exit(1);
+    });
+
+    let config_path = std::env::var("SUPABASED_CONFIG")
+        .unwrap_or_else(|_| "supabased.toml".to_string());
+    let server_config = config::load_config(&config_path).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+
+    let supabase_client = supabase::SupabaseClient::new(supabase_token);
+
     let addr = "[::1]:50051".parse()?;
-    let svc = SupabasedService::new(conn, jwt_secret.clone(), github_org);
+    let svc = SupabasedService::new(conn, jwt_secret.clone(), github_org, supabase_client, server_config);
     let interceptor = make_interceptor(jwt_secret);
 
     let mut server = Server::builder();
