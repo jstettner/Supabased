@@ -108,9 +108,24 @@ impl Supabased for SupabasedService {
 
     async fn list_projects(
         &self,
-        _request: Request<ListProjectsRequest>,
+        request: Request<ListProjectsRequest>,
     ) -> Result<Response<ListProjectsResponse>, Status> {
-        Err(Status::unimplemented("not yet implemented"))
+        // Require any valid auth — user must be authenticated
+        request
+            .extensions()
+            .get::<AuthContext>()
+            .ok_or_else(|| Status::unauthenticated("authentication required"))?;
+
+        let projects = self
+            .config
+            .projects
+            .iter()
+            .map(|p| supabased_proto::supabased::ProjectInfo {
+                name: p.name.clone(),
+            })
+            .collect();
+
+        Ok(Response::new(ListProjectsResponse { projects }))
     }
 
     async fn create_branch(

@@ -114,3 +114,105 @@ impl tonic::service::Interceptor for JwtInterceptor {
 pub fn make_interceptor(secret: Vec<u8>) -> JwtInterceptor {
     JwtInterceptor::new(secret)
 }
+
+pub fn require_permission(ctx: &AuthContext, perm: &str) -> Result<(), Status> {
+    if ctx.permissions.iter().any(|p| p == perm) {
+        Ok(())
+    } else {
+        Err(Status::permission_denied(format!(
+            "missing required permission: {perm}"
+        )))
+    }
+}
+
+pub fn require_permission_or_owner(
+    ctx: &AuthContext,
+    perm_own: &str,
+    perm_any: &str,
+    owner: &str,
+) -> Result<(), Status> {
+    if ctx.permissions.iter().any(|p| p == perm_any) {
+        return Ok(());
+    }
+    if ctx.permissions.iter().any(|p| p == perm_own) && ctx.identity == owner {
+        return Ok(());
+    }
+    Err(Status::permission_denied(format!(
+        "missing required permission: {perm_any} or {perm_own} (as owner)"
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx(identity: &str, perms: &[&str]) -> AuthContext {
+        AuthContext {
+            identity: identity.to_string(),
+            permissions: perms.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn require_permission_grants_when_present() {
+        let c = ctx("github:alice", &["branches.create", "branches.list"]);
+        assert!(require_permission(&c, "branches.create").is_ok());
+    }
+
+    #[test]
+    fn require_permission_denies_when_absent() {
+        let c = ctx("github:alice", &["branches.list"]);
+        let err = require_permission(&c, "branches.create").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[test]
+    fn require_permission_or_owner_grants_with_any() {
+        let c = ctx("github:alice", &["branches.delete_any"]);
+        assert!(require_permission_or_owner(
+            &c,
+            "branches.delete_own",
+            "branches.delete_any",
+            "github:bob", // not the owner, but has _any
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn require_permission_or_owner_grants_own_when_owner() {
+        let c = ctx("github:alice", &["branches.delete_own"]);
+        assert!(require_permission_or_owner(
+            &c,
+            "branches.delete_own",
+            "branches.delete_any",
+            "github:alice", // is the owner
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn require_permission_or_owner_denies_own_when_not_owner() {
+        let c = ctx("github:alice", &["branches.delete_own"]);
+        let err = require_permission_or_owner(
+            &c,
+            "branches.delete_own",
+            "branches.delete_any",
+            "github:bob", // not the owner
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[test]
+    fn require_permission_or_owner_denies_with_neither() {
+        let c = ctx("github:alice", &["branches.list"]);
+        let err = require_permission_or_owner(
+            &c,
+            "branches.delete_own",
+            "branches.delete_any",
+            "github:alice",
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+}
