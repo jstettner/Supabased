@@ -6,6 +6,15 @@ use std::path::PathBuf;
 pub struct Config {
     pub server_url: Option<String>,
     pub ca_cert: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_projects: Option<Vec<CachedProject>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_version: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CachedProject {
+    pub name: String,
 }
 
 pub fn config_path() -> PathBuf {

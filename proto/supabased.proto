@@ -4,6 +4,11 @@ package supabased;
 service Supabased {
   rpc WhoAmI (WhoAmIRequest) returns (WhoAmIResponse);
   rpc Authenticate (AuthRequest) returns (AuthResponse);
+  rpc ListProjects (ListProjectsRequest) returns (ListProjectsResponse);
+  rpc CreateBranch (CreateBranchRequest) returns (CreateBranchResponse);
+  rpc ListBranches (ListBranchesRequest) returns (ListBranchesResponse);
+  rpc DeleteBranch (DeleteBranchRequest) returns (DeleteBranchResponse);
+  rpc GetBranchCredentials (GetBranchCredentialsRequest) returns (BranchCredentials);
 }
 
 message WhoAmIRequest {}
@@ -26,4 +31,56 @@ message AuthResponse {
   string identity = 2;
   repeated string permissions = 3;
   int64 expires_at = 4;
+}
+
+// Project listing (config-driven, no Supabase API call)
+message ListProjectsRequest {}
+message ListProjectsResponse {
+  repeated ProjectInfo projects = 1;
+}
+message ProjectInfo {
+  string name = 1;
+}
+
+// Branch operations
+message CreateBranchRequest {
+  string project_name = 1;
+  string branch_name = 2;
+}
+message CreateBranchResponse {
+  BranchInfo branch = 1;
+}
+
+message BranchInfo {
+  string branch_name = 1;
+  string project_name = 2;
+  string status = 3;
+  string created_at = 4;
+}
+
+message ListBranchesRequest {
+  string project_name = 1;  // empty = all projects
+}
+message ListBranchesResponse {
+  repeated BranchInfo branches = 1;
+}
+
+message DeleteBranchRequest {
+  string project_name = 1;
+  string branch_name = 2;
+}
+message DeleteBranchResponse {
+  bool deleted = 1;
+}
+
+message GetBranchCredentialsRequest {
+  string project_name = 1;
+  string branch_name = 2;
+}
+message BranchCredentials {
+  string branch_name = 1;
+  string project_name = 2;
+  string api_url = 3;
+  string anon_key = 4;
+  string service_role_key = 5;
 }

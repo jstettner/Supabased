@@ -1,0 +1,8 @@
+# Supabased project configuration
+# Each [[projects]] entry defines a Supabase project that branches can be created from.
+# The "name" is a human-readable label used in CLI commands.
+# The "ref" is the Supabase project reference (found in project settings).
+
+# [[projects]]
+# name = "staging"
+# ref = "abcdefghijklmnop"
