@@ -67,7 +67,7 @@ impl SupabaseClient {
         let body = serde_json::json!({
             "branch_name": branch_name,
             "git_branch": branch_name,
-            "desired_instance_size": "micro",
+            "with_data": true,
         });
 
         let response = client
