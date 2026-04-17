@@ -1,5 +1,7 @@
 mod config;
 mod session;
+mod tree;
+mod dotenv;
 
 use std::io::{self, Write};
 
@@ -7,7 +9,11 @@ use clap::{Parser, Subcommand};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 use supabased_proto::supabased::supabased_client::SupabasedClient;
-use supabased_proto::supabased::{AuthRequest, WhoAmIRequest, auth_request::Method};
+use supabased_proto::supabased::{
+    AuthRequest, WhoAmIRequest, auth_request::Method,
+    ListProjectsRequest, CreateBranchRequest, ListBranchesRequest,
+    DeleteBranchRequest, GetBranchCredentialsRequest,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "supabased", version, about = "Supabased CLI")]
@@ -25,10 +31,56 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Show identity and permissions
-    Whoami,
     /// Authenticate with GitHub
     Login,
+    /// Show identity and permissions
+    Whoami,
+    /// Project management commands
+    #[command(subcommand)]
+    Project(ProjectCommands),
+    /// Branch management commands
+    #[command(subcommand)]
+    Branch(BranchCommands),
+}
+
+#[derive(Debug, Subcommand)]
+enum ProjectCommands {
+    /// List configured projects
+    List,
+}
+
+#[derive(Debug, Subcommand)]
+enum BranchCommands {
+    /// Create a branch from a configured project
+    Create {
+        /// Project to branch from
+        #[arg(long)]
+        project: String,
+        /// Name for the new branch
+        name: String,
+    },
+    /// List branches (all projects if --project is omitted)
+    List {
+        /// Filter by project name
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Delete a branch
+    Delete {
+        /// Project the branch belongs to
+        #[arg(long)]
+        project: String,
+        /// Name of the branch to delete
+        name: String,
+    },
+    /// Get credentials for a branch
+    Credentials {
+        /// Project the branch belongs to
+        #[arg(long)]
+        project: String,
+        /// Name of the branch
+        name: String,
+    },
 }
 
 async fn connect(
@@ -54,6 +106,12 @@ async fn connect(
     };
 
     Ok(SupabasedClient::new(channel))
+}
+
+fn auth_metadata(
+    session_token: &str,
+) -> Result<tonic::metadata::MetadataValue<tonic::metadata::Ascii>, Box<dyn std::error::Error>> {
+    Ok(format!("Bearer {session_token}").parse()?)
 }
 
 #[tokio::main]
@@ -142,6 +200,161 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Identity: {}", reply.identity);
             println!("Permissions: {:?}", reply.permissions);
             println!("Accessible branches: {:?}", reply.accessible_branches);
+        }
+
+        Commands::Project(ProjectCommands::List) => {
+            let sess = session::load_session().unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            });
+
+            let server = cli
+                .server
+                .as_deref()
+                .or(cfg.server_url.as_deref())
+                .unwrap_or("http://[::1]:50051");
+            let mut client = connect(server, ca_cert.as_deref()).await?;
+
+            let mut request = tonic::Request::new(ListProjectsRequest {});
+            request
+                .metadata_mut()
+                .insert("authorization", auth_metadata(&sess.session_token)?);
+
+            let response = client.list_projects(request).await?;
+            let reply = response.into_inner();
+
+            if reply.projects.is_empty() {
+                println!("No projects configured.");
+            } else {
+                println!("Configured projects:");
+                for p in &reply.projects {
+                    println!("  {}", p.name);
+                }
+            }
+        }
+
+        Commands::Branch(BranchCommands::Create { project, name }) => {
+            let sess = session::load_session().unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            });
+
+            let server = cli
+                .server
+                .as_deref()
+                .or(cfg.server_url.as_deref())
+                .unwrap_or("http://[::1]:50051");
+            let mut client = connect(server, ca_cert.as_deref()).await?;
+
+            let mut request = tonic::Request::new(CreateBranchRequest {
+                project_name: project,
+                branch_name: name,
+            });
+            request
+                .metadata_mut()
+                .insert("authorization", auth_metadata(&sess.session_token)?);
+
+            let response = client.create_branch(request).await?;
+            let reply = response.into_inner();
+
+            if let Some(branch) = reply.branch {
+                println!(
+                    "Created branch '{}' in project '{}' (status: {})",
+                    branch.branch_name, branch.project_name, branch.status
+                );
+            }
+        }
+
+        Commands::Branch(BranchCommands::List { project }) => {
+            let sess = session::load_session().unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            });
+
+            let server = cli
+                .server
+                .as_deref()
+                .or(cfg.server_url.as_deref())
+                .unwrap_or("http://[::1]:50051");
+            let mut client = connect(server, ca_cert.as_deref()).await?;
+
+            let mut request = tonic::Request::new(ListBranchesRequest {
+                project_name: project.unwrap_or_default(),
+            });
+            request
+                .metadata_mut()
+                .insert("authorization", auth_metadata(&sess.session_token)?);
+
+            let response = client.list_branches(request).await?;
+            let reply = response.into_inner();
+
+            println!("{}", tree::render_branch_tree(&reply.branches));
+        }
+
+        Commands::Branch(BranchCommands::Delete { project, name }) => {
+            let sess = session::load_session().unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            });
+
+            let server = cli
+                .server
+                .as_deref()
+                .or(cfg.server_url.as_deref())
+                .unwrap_or("http://[::1]:50051");
+            let mut client = connect(server, ca_cert.as_deref()).await?;
+
+            let mut request = tonic::Request::new(DeleteBranchRequest {
+                project_name: project.clone(),
+                branch_name: name.clone(),
+            });
+            request
+                .metadata_mut()
+                .insert("authorization", auth_metadata(&sess.session_token)?);
+
+            client.delete_branch(request).await?;
+            println!("Deleted branch '{}' from project '{}'", name, project);
+        }
+
+        Commands::Branch(BranchCommands::Credentials { project, name }) => {
+            let sess = session::load_session().unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            });
+
+            let server = cli
+                .server
+                .as_deref()
+                .or(cfg.server_url.as_deref())
+                .unwrap_or("http://[::1]:50051");
+            let mut client = connect(server, ca_cert.as_deref()).await?;
+
+            let mut request = tonic::Request::new(GetBranchCredentialsRequest {
+                project_name: project,
+                branch_name: name,
+            });
+            request
+                .metadata_mut()
+                .insert("authorization", auth_metadata(&sess.session_token)?);
+
+            let response = client.get_branch_credentials(request).await?;
+            let creds = response.into_inner();
+
+            println!("Branch: {}/{}", creds.project_name, creds.branch_name);
+            println!("  SUPABASE_URL={}", creds.api_url);
+            println!("  SUPABASE_KEY={}", creds.anon_key);
+            println!("  SUPABASE_SECRET_KEY={}", creds.service_role_key);
+
+            let block = dotenv::format_supabase_block(
+                &creds.project_name,
+                &creds.branch_name,
+                &creds.api_url,
+                &creds.anon_key,
+                &creds.service_role_key,
+            );
+            let dotenv_path = std::env::current_dir()?.join(".env");
+            dotenv::update_dotenv(&dotenv_path, &block)?;
+            println!("\nWritten to {}", dotenv_path.display());
         }
     }
 

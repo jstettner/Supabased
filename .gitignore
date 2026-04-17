@@ -6,5 +6,6 @@
 supabased.db*
 
 .env
+supabased.toml
 
 SPEC.md
