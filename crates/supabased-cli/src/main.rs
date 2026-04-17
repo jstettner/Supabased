@@ -114,6 +114,47 @@ fn auth_metadata(
     Ok(format!("Bearer {session_token}").parse()?)
 }
 
+fn extract_config_version(metadata: &tonic::metadata::MetadataMap) -> Option<String> {
+    metadata
+        .get("x-config-version")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+}
+
+async fn refresh_project_cache(
+    client: &mut SupabasedClient<tonic::transport::Channel>,
+    session_token: &str,
+    server_version: Option<String>,
+) {
+    let mut cfg = config::load_config();
+
+    // Only refresh if version actually changed
+    if server_version.as_deref() == cfg.config_version.as_deref() {
+        return;
+    }
+
+    let mut request = tonic::Request::new(ListProjectsRequest {});
+    if let Ok(val) = auth_metadata(session_token) {
+        request.metadata_mut().insert("authorization", val);
+    } else {
+        return;
+    }
+
+    if let Ok(response) = client.list_projects(request).await {
+        let projects = response.into_inner().projects;
+        cfg.cached_projects = Some(
+            projects
+                .iter()
+                .map(|p| config::CachedProject {
+                    name: p.name.clone(),
+                })
+                .collect(),
+        );
+        cfg.config_version = server_version;
+        let _ = config::save_config(&cfg);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -159,10 +200,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let reply = response.into_inner();
 
             // Save config and session
-            config::save_config(&config::Config {
-                server_url: Some(server.to_string()),
-                ca_cert,
-            })?;
+            // Preserve any existing cached fields when updating config
+            let mut updated_cfg = config::load_config();
+            updated_cfg.server_url = Some(server.to_string());
+            updated_cfg.ca_cert = ca_cert;
+            config::save_config(&updated_cfg)?;
 
             let sess = session::Session {
                 session_token: reply.session_token,
@@ -195,7 +237,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
 
             let response = client.who_am_i(request).await?;
+            let version = extract_config_version(response.metadata());
             let reply = response.into_inner();
+            refresh_project_cache(&mut client, &sess.session_token, version).await;
 
             println!("Identity: {}", reply.identity);
             println!("Permissions: {:?}", reply.permissions);
@@ -221,7 +265,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .insert("authorization", auth_metadata(&sess.session_token)?);
 
             let response = client.list_projects(request).await?;
+            let version = extract_config_version(response.metadata());
             let reply = response.into_inner();
+
+            // Update cache
+            let mut cfg_updated = config::load_config();
+            cfg_updated.cached_projects = Some(
+                reply.projects
+                    .iter()
+                    .map(|p| config::CachedProject { name: p.name.clone() })
+                    .collect(),
+            );
+            cfg_updated.config_version = version;
+            let _ = config::save_config(&cfg_updated);
 
             if reply.projects.is_empty() {
                 println!("No projects configured.");
@@ -255,7 +311,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .insert("authorization", auth_metadata(&sess.session_token)?);
 
             let response = client.create_branch(request).await?;
+            let version = extract_config_version(response.metadata());
             let reply = response.into_inner();
+            refresh_project_cache(&mut client, &sess.session_token, version).await;
 
             if let Some(branch) = reply.branch {
                 println!(
@@ -286,7 +344,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .insert("authorization", auth_metadata(&sess.session_token)?);
 
             let response = client.list_branches(request).await?;
+            let version = extract_config_version(response.metadata());
             let reply = response.into_inner();
+            refresh_project_cache(&mut client, &sess.session_token, version).await;
 
             println!("{}", tree::render_branch_tree(&reply.branches));
         }
@@ -312,7 +372,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .metadata_mut()
                 .insert("authorization", auth_metadata(&sess.session_token)?);
 
-            client.delete_branch(request).await?;
+            let response = client.delete_branch(request).await?;
+            let version = extract_config_version(response.metadata());
+            refresh_project_cache(&mut client, &sess.session_token, version).await;
             println!("Deleted branch '{}' from project '{}'", name, project);
         }
 
@@ -338,7 +400,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .insert("authorization", auth_metadata(&sess.session_token)?);
 
             let response = client.get_branch_credentials(request).await?;
+            let version = extract_config_version(response.metadata());
             let creds = response.into_inner();
+            refresh_project_cache(&mut client, &sess.session_token, version).await;
 
             println!("Branch: {}/{}", creds.project_name, creds.branch_name);
             println!("  SUPABASE_URL={}", creds.api_url);

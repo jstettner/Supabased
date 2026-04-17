@@ -31,6 +31,7 @@ pub struct SupabasedService {
     pub rate_limiter: RateLimiter,
     pub supabase_client: SupabaseClient,
     pub config: ServerConfig,
+    pub config_hash: String,
 }
 
 impl SupabasedService {
@@ -40,10 +41,18 @@ impl SupabasedService {
         github_org: String,
         supabase_client: SupabaseClient,
         config: ServerConfig,
+        config_hash: String,
     ) -> Self {
         let rate_limiter = RateLimiter::new(5, Duration::from_secs(60));
         rate_limiter.spawn_cleanup_task();
-        Self { db, jwt_secret, github_org, rate_limiter, supabase_client, config }
+        Self { db, jwt_secret, github_org, rate_limiter, supabase_client, config, config_hash }
+    }
+
+    fn with_config_version<T>(&self, mut response: Response<T>) -> Response<T> {
+        if let Ok(val) = self.config_hash.parse() {
+            response.metadata_mut().insert("x-config-version", val);
+        }
+        response
     }
 }
 
@@ -57,11 +66,11 @@ impl Supabased for SupabasedService {
             .extensions()
             .get::<AuthContext>()
             .ok_or_else(|| Status::unauthenticated("authentication required"))?;
-        Ok(Response::new(WhoAmIResponse {
+        Ok(self.with_config_version(Response::new(WhoAmIResponse {
             identity: ctx.identity.clone(),
             permissions: ctx.permissions.clone(),
             accessible_branches: vec![],
-        }))
+        })))
     }
 
     async fn authenticate(
@@ -100,12 +109,12 @@ impl Supabased for SupabasedService {
         )
         .map_err(|e| Status::internal(format!("token creation failed: {e}")))?;
 
-        Ok(Response::new(AuthResponse {
+        Ok(self.with_config_version(Response::new(AuthResponse {
             session_token: token,
             identity,
             permissions,
             expires_at,
-        }))
+        })))
     }
 
     async fn list_projects(
@@ -127,7 +136,7 @@ impl Supabased for SupabasedService {
             })
             .collect();
 
-        Ok(Response::new(ListProjectsResponse { projects }))
+        Ok(self.with_config_version(Response::new(ListProjectsResponse { projects })))
     }
 
     async fn create_branch(
@@ -170,14 +179,14 @@ impl Supabased for SupabasedService {
         .await
         .map_err(|e| Status::internal(format!("failed to record branch: {e}")))?;
 
-        Ok(Response::new(CreateBranchResponse {
+        Ok(self.with_config_version(Response::new(CreateBranchResponse {
             branch: Some(supabased_proto::supabased::BranchInfo {
                 branch_name: req.branch_name,
                 project_name: req.project_name,
                 status: branch_resp.status.unwrap_or_default(),
                 created_at: branch_resp.created_at.unwrap_or_default(),
             }),
-        }))
+        })))
     }
 
     async fn list_branches(
@@ -226,7 +235,7 @@ impl Supabased for SupabasedService {
             }
         }
 
-        Ok(Response::new(ListBranchesResponse { branches }))
+        Ok(self.with_config_version(Response::new(ListBranchesResponse { branches })))
     }
 
     async fn delete_branch(
@@ -269,7 +278,7 @@ impl Supabased for SupabasedService {
             .await
             .map_err(|e| Status::internal(format!("database error: {e}")))?;
 
-        Ok(Response::new(DeleteBranchResponse { deleted: true }))
+        Ok(self.with_config_version(Response::new(DeleteBranchResponse { deleted: true })))
     }
 
     async fn get_branch_credentials(
@@ -310,12 +319,12 @@ impl Supabased for SupabasedService {
 
         let creds = supabase::extract_credentials(&keys, &record.branch_ref)?;
 
-        Ok(Response::new(BranchCredentials {
+        Ok(self.with_config_version(Response::new(BranchCredentials {
             branch_name: req.branch_name,
             project_name: req.project_name,
             api_url: creds.api_url,
             anon_key: creds.anon_key,
             service_role_key: creds.service_role_key,
-        }))
+        })))
     }
 }

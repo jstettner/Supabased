@@ -18,9 +18,13 @@ impl ServerConfig {
     }
 }
 
-pub fn load_config(path: &str) -> Result<ServerConfig, String> {
+pub fn load_config(path: &str) -> Result<(ServerConfig, String), String> {
     let contents = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read config file {path}: {e}"))?;
+
+    use sha2::{Sha256, Digest};
+    let config_hash = format!("{:x}", Sha256::digest(contents.as_bytes()));
+
     let config: ServerConfig =
         toml::from_str(&contents).map_err(|e| format!("failed to parse config file {path}: {e}"))?;
     if config.projects.is_empty() {
@@ -38,7 +42,7 @@ pub fn load_config(path: &str) -> Result<ServerConfig, String> {
                 Ok(())
             }
         })?;
-    Ok(config)
+    Ok((config, config_hash))
 }
 
 #[cfg(test)]
@@ -63,11 +67,13 @@ ref = "qrstuvwxyz123456"
         )
         .unwrap();
 
-        let config = load_config(f.path().to_str().unwrap()).unwrap();
+        let (config, hash) = load_config(f.path().to_str().unwrap()).unwrap();
         assert_eq!(config.projects.len(), 2);
         assert_eq!(config.projects[0].name, "staging");
         assert_eq!(config.projects[0].project_ref, "abcdefghijklmnop");
         assert_eq!(config.projects[1].name, "production");
+        assert!(!hash.is_empty());
+        assert_eq!(hash.len(), 64); // SHA-256 hex is 64 chars
     }
 
     #[test]
@@ -115,5 +121,53 @@ ref = "qrstuvwxyz123456"
             ],
         };
         assert!(config.resolve_project("unknown").is_none());
+    }
+
+    #[test]
+    fn hash_is_deterministic() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+"#
+        )
+        .unwrap();
+
+        let (_, hash1) = load_config(f.path().to_str().unwrap()).unwrap();
+        let (_, hash2) = load_config(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn hash_changes_when_content_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        std::fs::write(
+            &path,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abc"
+"#,
+        )
+        .unwrap();
+        let (_, hash1) = load_config(path.to_str().unwrap()).unwrap();
+
+        std::fs::write(
+            &path,
+            r#"
+[[projects]]
+name = "production"
+ref = "xyz"
+"#,
+        )
+        .unwrap();
+        let (_, hash2) = load_config(path.to_str().unwrap()).unwrap();
+
+        assert_ne!(hash1, hash2);
     }
 }

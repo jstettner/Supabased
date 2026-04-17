@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config_path = std::env::var("SUPABASED_CONFIG")
         .unwrap_or_else(|_| "supabased.toml".to_string());
-    let server_config = config::load_config(&config_path).unwrap_or_else(|e| {
+    let (server_config, config_hash) = config::load_config(&config_path).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let supabase_client = supabase::SupabaseClient::new(supabase_token);
 
     let addr = "[::1]:50051".parse()?;
-    let svc = SupabasedService::new(conn, jwt_secret.clone(), github_org, supabase_client, server_config);
+    let svc = SupabasedService::new(conn, jwt_secret.clone(), github_org, supabase_client, server_config, config_hash);
     let interceptor = make_interceptor(jwt_secret);
 
     let mut server = Server::builder();
