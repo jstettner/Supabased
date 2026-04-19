@@ -38,7 +38,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let supabase_client = supabase::SupabaseClient::new(supabase_token);
 
-    let addr = "[::1]:50051".parse()?;
+    let addr = std::env::var("BIND_ADDR")
+        .unwrap_or_else(|_| "[::]:50051".to_string())
+        .parse()?;
     let svc = SupabasedService::new(conn, jwt_secret.clone(), github_org, supabase_client, server_config, config_hash);
     let interceptor = make_interceptor(jwt_secret);
 
