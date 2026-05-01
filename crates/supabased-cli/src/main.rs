@@ -4,14 +4,16 @@ mod session;
 mod tree;
 
 use std::io::{self, Write};
+use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 use supabased_proto::supabased::supabased_client::SupabasedClient;
 use supabased_proto::supabased::{
-    CreateBranchRequest, DeleteBranchRequest, GetBranchCredentialsRequest, ListBranchesRequest,
-    ListProjectsRequest, WhoAmIRequest,
+    CreateBranchRequest, DeleteBranchRequest, FinishGithubDeviceAuthRequest,
+    GetBranchCredentialsRequest, ListBranchesRequest, ListProjectsRequest,
+    StartGithubDeviceAuthRequest, WhoAmIRequest, finish_github_device_auth_response,
 };
 
 #[derive(Debug, Parser)]
@@ -181,8 +183,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 input
             };
 
-            let _client = connect(server, ca_cert.as_deref()).await?;
-            return Err("GitHub OAuth login is not wired yet".into());
+            let mut client = connect(server, ca_cert.as_deref()).await?;
+            let start = client
+                .start_github_device_auth(tonic::Request::new(StartGithubDeviceAuthRequest {}))
+                .await?
+                .into_inner();
+
+            println!("First copy your one-time code: {}", start.user_code);
+            println!("Opening {} in your browser...", start.verification_uri);
+            if let Err(e) = open::that(&start.verification_uri) {
+                eprintln!("Could not open browser automatically: {e}");
+                eprintln!("Open this URL manually: {}", start.verification_uri);
+            }
+
+            let mut interval = start.interval.max(1) as u64;
+            let deadline = Instant::now() + Duration::from_secs(start.expires_in.max(1) as u64);
+            let reply = loop {
+                if Instant::now() >= deadline {
+                    return Err("GitHub authorization expired; run `supabased login` again".into());
+                }
+
+                tokio::time::sleep(Duration::from_secs(interval)).await;
+                let response = client
+                    .finish_github_device_auth(tonic::Request::new(FinishGithubDeviceAuthRequest {
+                        auth_session_id: start.auth_session_id.clone(),
+                    }))
+                    .await?
+                    .into_inner();
+
+                match response.result {
+                    Some(finish_github_device_auth_response::Result::Auth(auth)) => break auth,
+                    Some(finish_github_device_auth_response::Result::Pending(pending)) => {
+                        interval = pending.interval.max(1) as u64;
+                        eprintln!("Waiting for GitHub authorization...");
+                    }
+                    None => return Err("server returned an empty OAuth polling response".into()),
+                }
+            };
+
+            let mut updated_cfg = config::load_config();
+            updated_cfg.server_url = Some(server.to_string());
+            updated_cfg.ca_cert = ca_cert;
+            config::save_config(&updated_cfg)?;
+
+            let sess = session::Session {
+                session_token: reply.session_token,
+                identity: reply.identity.clone(),
+                expires_at: reply.expires_at,
+            };
+            session::save_session(&sess)?;
+
+            println!("Logged in as {}", reply.identity);
+            println!("Session stored at {}", session::session_path().display());
         }
 
         Commands::Whoami => {
