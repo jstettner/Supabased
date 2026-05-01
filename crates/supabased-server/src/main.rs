@@ -23,6 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("error: GITHUB_ORG environment variable is required but not set");
         std::process::exit(1);
     });
+    let github_oauth_client_id = std::env::var("GITHUB_OAUTH_CLIENT_ID").unwrap_or_else(|_| {
+        eprintln!("error: GITHUB_OAUTH_CLIENT_ID environment variable is required but not set");
+        std::process::exit(1);
+    });
 
     let supabase_token = std::env::var("SUPABASE_ACCESS_TOKEN").unwrap_or_else(|_| {
         eprintln!("error: SUPABASE_ACCESS_TOKEN environment variable is required but not set");
@@ -45,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         conn,
         jwt_secret.clone(),
         github_org,
+        github_oauth_client_id,
         supabase_client,
         server_config,
         config_hash,
