@@ -20,6 +20,7 @@ message WhoAmIResponse {
   repeated string accessible_branches = 3;
 }
 
+// Removed PAT/API-key Authenticate request. Do not reuse these fields; old clients should fail safely.
 message AuthRequest {
   reserved 1, 2;
   reserved "github_token", "api_key";

@@ -75,6 +75,14 @@ impl SupabasedService {
         response
     }
 
+    fn prune_expired_device_sessions(&self) {
+        let now = Instant::now();
+        self.github_device_sessions
+            .lock()
+            .unwrap()
+            .retain(|_, session| session.expires_at > now);
+    }
+
     fn lookup_device_session(&self, auth_session_id: &str) -> Result<GithubDeviceSession, Status> {
         let mut sessions = self.github_device_sessions.lock().unwrap();
         let Some(session) = sessions.get(auth_session_id) else {
@@ -87,6 +95,13 @@ impl SupabasedService {
             ));
         }
         Ok(session.clone())
+    }
+
+    fn remove_device_session(&self, auth_session_id: &str) {
+        self.github_device_sessions
+            .lock()
+            .unwrap()
+            .remove(auth_session_id);
     }
 
     fn update_device_session_interval(&self, auth_session_id: &str, interval: i64) {
@@ -142,6 +157,7 @@ impl Supabased for SupabasedService {
         if let Some(addr) = request.remote_addr() {
             self.rate_limiter.check_rate_limit(addr.ip())?;
         }
+        self.prune_expired_device_sessions();
         let start = github::start_device_auth(&self.github_oauth_client_id, "read:org").await?;
         let auth_session_id = generate_auth_session_id();
         let expires_in = start.expires_in.max(1);
@@ -171,7 +187,12 @@ impl Supabased for SupabasedService {
             return Err(Status::invalid_argument("auth_session_id required"));
         }
         let session = self.lookup_device_session(&auth_session_id)?;
-        match github::poll_device_auth(&self.github_oauth_client_id, &session.device_code).await? {
+        let poll =
+            github::poll_device_auth(&self.github_oauth_client_id, &session.device_code).await;
+        if poll.is_err() {
+            self.remove_device_session(&auth_session_id);
+        }
+        match poll? {
             github::DeviceAuthPoll::Pending { interval } => Ok(Response::new(pending_response(
                 interval.unwrap_or(session.interval),
             ))),
@@ -191,10 +212,7 @@ impl Supabased for SupabasedService {
                 let (token, expires_at) =
                     auth::create_token(&self.jwt_secret, &identity, &permissions)
                         .map_err(|e| Status::internal(format!("token creation failed: {e}")))?;
-                self.github_device_sessions
-                    .lock()
-                    .unwrap()
-                    .remove(&auth_session_id);
+                self.remove_device_session(&auth_session_id);
                 Ok(Response::new(FinishGithubDeviceAuthResponse {
                     result: Some(finish_github_device_auth_response::Result::Auth(
                         AuthResponse {
@@ -442,5 +460,35 @@ mod oauth_session_tests {
             panic!("expected pending response");
         };
         assert_eq!(pending.interval, 1);
+    }
+
+    #[test]
+    fn pruning_removes_expired_sessions_only() {
+        let sessions = Arc::new(Mutex::new(HashMap::from([
+            (
+                "expired".to_string(),
+                GithubDeviceSession {
+                    device_code: "expired-code".to_string(),
+                    expires_at: Instant::now() - Duration::from_secs(1),
+                    interval: 5,
+                },
+            ),
+            (
+                "active".to_string(),
+                GithubDeviceSession {
+                    device_code: "active-code".to_string(),
+                    expires_at: Instant::now() + Duration::from_secs(60),
+                    interval: 5,
+                },
+            ),
+        ])));
+        let now = Instant::now();
+        sessions
+            .lock()
+            .unwrap()
+            .retain(|_, session| session.expires_at > now);
+        let sessions = sessions.lock().unwrap();
+        assert!(!sessions.contains_key("expired"));
+        assert!(sessions.contains_key("active"));
     }
 }

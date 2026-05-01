@@ -10,6 +10,7 @@ pub struct SupabaseClient {
 /// Full branch response from `POST /v1/projects/{ref}/branches`
 /// and `GET /v1/projects/{ref}/branches` (list item).
 /// Models the complete API shape — we selectively map to proto types.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct BranchResponse {
     pub id: String,

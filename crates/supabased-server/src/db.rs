@@ -72,6 +72,7 @@ pub async fn ensure_jwt_secret(conn: &Connection) -> Result<Vec<u8>, Box<dyn std
     Ok(secret)
 }
 
+#[allow(dead_code)]
 pub struct BranchRecord {
     pub branch_name: String,
     pub project_name: String,
@@ -129,6 +130,7 @@ pub async fn get_branch(
     .await
 }
 
+#[allow(dead_code)]
 pub async fn list_branches_by_project(
     conn: &Connection,
     project_name: &str,
@@ -154,6 +156,7 @@ pub async fn list_branches_by_project(
     .await
 }
 
+#[allow(dead_code)]
 pub async fn list_all_branches(conn: &Connection) -> Result<Vec<BranchRecord>, TokioRusqliteError> {
     conn.call(|conn| -> Result<Vec<BranchRecord>, rusqlite::Error> {
         let mut stmt = conn.prepare(

@@ -60,7 +60,7 @@ pub async fn validate_token(token: &str) -> Result<GitHubUser, Status> {
 
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
         return Err(Status::unauthenticated(
-            "invalid GitHub token -- check that your PAT is valid and not expired",
+            "invalid GitHub OAuth token -- authorization may have been revoked or expired",
         ));
     }
 
