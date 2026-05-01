@@ -3,7 +3,8 @@ package supabased;
 
 service Supabased {
   rpc WhoAmI (WhoAmIRequest) returns (WhoAmIResponse);
-  rpc Authenticate (AuthRequest) returns (AuthResponse);
+  rpc StartGithubDeviceAuth (StartGithubDeviceAuthRequest) returns (StartGithubDeviceAuthResponse);
+  rpc FinishGithubDeviceAuth (FinishGithubDeviceAuthRequest) returns (FinishGithubDeviceAuthResponse);
   rpc ListProjects (ListProjectsRequest) returns (ListProjectsResponse);
   rpc CreateBranch (CreateBranchRequest) returns (CreateBranchResponse);
   rpc ListBranches (ListBranchesRequest) returns (ListBranchesResponse);
@@ -20,9 +21,33 @@ message WhoAmIResponse {
 }
 
 message AuthRequest {
-  oneof method {
-    string github_token = 1;
-    string api_key = 2;
+  reserved 1, 2;
+  reserved "github_token", "api_key";
+}
+
+message StartGithubDeviceAuthRequest {}
+
+message StartGithubDeviceAuthResponse {
+  string auth_session_id = 1;
+  string user_code = 2;
+  string verification_uri = 3;
+  int64 expires_in = 4;
+  int64 interval = 5;
+}
+
+message FinishGithubDeviceAuthRequest {
+  string auth_session_id = 1;
+}
+
+message GithubDeviceAuthPending {
+  int64 interval = 1;
+  string message = 2;
+}
+
+message FinishGithubDeviceAuthResponse {
+  oneof result {
+    AuthResponse auth = 1;
+    GithubDeviceAuthPending pending = 2;
   }
 }
 

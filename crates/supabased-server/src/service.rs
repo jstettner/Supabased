@@ -5,9 +5,8 @@ use tokio_rusqlite::Connection;
 
 use supabased_proto::supabased::{
     supabased_server::Supabased,
-    AuthRequest, AuthResponse,
-    WhoAmIRequest, WhoAmIResponse,
-    auth_request::Method,
+    FinishGithubDeviceAuthRequest, FinishGithubDeviceAuthResponse,
+    StartGithubDeviceAuthRequest, StartGithubDeviceAuthResponse, WhoAmIRequest, WhoAmIResponse,
     ListProjectsRequest, ListProjectsResponse,
     CreateBranchRequest, CreateBranchResponse,
     ListBranchesRequest, ListBranchesResponse,
@@ -15,11 +14,9 @@ use supabased_proto::supabased::{
     GetBranchCredentialsRequest, BranchCredentials,
 };
 
-use crate::auth;
 use crate::auth::{AuthContext, require_permission, require_permission_or_owner};
 use crate::config::ServerConfig;
 use crate::db;
-use crate::github;
 use crate::rate_limit::RateLimiter;
 use crate::supabase;
 use crate::supabase::SupabaseClient;
@@ -73,48 +70,18 @@ impl Supabased for SupabasedService {
         })))
     }
 
-    async fn authenticate(
+    async fn start_github_device_auth(
         &self,
-        request: Request<AuthRequest>,
-    ) -> Result<Response<AuthResponse>, Status> {
-        if let Some(addr) = request.remote_addr() {
-            self.rate_limiter.check_rate_limit(addr.ip())?;
-        }
+        _request: Request<StartGithubDeviceAuthRequest>,
+    ) -> Result<Response<StartGithubDeviceAuthResponse>, Status> {
+        Err(Status::unimplemented("GitHub OAuth device auth not wired yet"))
+    }
 
-        let req = request.into_inner();
-        let method = req.method.ok_or_else(|| {
-            Status::invalid_argument("auth method required")
-        })?;
-
-        let identity = match method {
-            Method::GithubToken(token) => {
-                let user = github::validate_token(&token).await?;
-                github::check_org_membership(&token, &self.github_org, &user.login).await?;
-                format!("github:{}", user.login)
-            }
-            Method::ApiKey(_) => {
-                return Err(Status::unimplemented("API key auth not yet supported"));
-            }
-        };
-
-        let permissions: Vec<String> = auth::DEFAULT_PERMISSIONS
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-
-        let (token, expires_at) = auth::create_token(
-            &self.jwt_secret,
-            &identity,
-            &permissions,
-        )
-        .map_err(|e| Status::internal(format!("token creation failed: {e}")))?;
-
-        Ok(self.with_config_version(Response::new(AuthResponse {
-            session_token: token,
-            identity,
-            permissions,
-            expires_at,
-        })))
+    async fn finish_github_device_auth(
+        &self,
+        _request: Request<FinishGithubDeviceAuthRequest>,
+    ) -> Result<Response<FinishGithubDeviceAuthResponse>, Status> {
+        Err(Status::unimplemented("GitHub OAuth device auth not wired yet"))
     }
 
     async fn list_projects(

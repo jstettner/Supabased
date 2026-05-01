@@ -10,7 +10,7 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 use supabased_proto::supabased::supabased_client::SupabasedClient;
 use supabased_proto::supabased::{
-    AuthRequest, WhoAmIRequest, auth_request::Method,
+    WhoAmIRequest,
     ListProjectsRequest, CreateBranchRequest, ListBranchesRequest,
     DeleteBranchRequest, GetBranchCredentialsRequest,
 };
@@ -182,39 +182,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 input
             };
 
-            // Prompt for GitHub PAT
-            let token = rpassword::prompt_password("Enter your GitHub personal access token: ")?;
-
-            if token.is_empty() {
-                eprintln!("Error: no token provided");
-                std::process::exit(1);
-            }
-
-            // Call Authenticate RPC
-            let mut client = connect(server, ca_cert.as_deref()).await?;
-            let response = client
-                .authenticate(tonic::Request::new(AuthRequest {
-                    method: Some(Method::GithubToken(token)),
-                }))
-                .await?;
-            let reply = response.into_inner();
-
-            // Save config and session
-            // Preserve any existing cached fields when updating config
-            let mut updated_cfg = config::load_config();
-            updated_cfg.server_url = Some(server.to_string());
-            updated_cfg.ca_cert = ca_cert;
-            config::save_config(&updated_cfg)?;
-
-            let sess = session::Session {
-                session_token: reply.session_token,
-                identity: reply.identity.clone(),
-                expires_at: reply.expires_at,
-            };
-            session::save_session(&sess)?;
-
-            println!("Logged in as {}", reply.identity);
-            println!("Session stored at {}", session::session_path().display());
+            let _client = connect(server, ca_cert.as_deref()).await?;
+            return Err("GitHub OAuth login is not wired yet".into());
         }
 
         Commands::Whoami => {
