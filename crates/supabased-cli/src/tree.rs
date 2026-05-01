@@ -7,10 +7,7 @@ pub fn render_branch_tree(branches: &[BranchInfo]) -> String {
 
     let mut by_project: BTreeMap<&str, Vec<&BranchInfo>> = BTreeMap::new();
     for b in branches {
-        by_project
-            .entry(&b.project_name)
-            .or_default()
-            .push(b);
+        by_project.entry(&b.project_name).or_default().push(b);
     }
 
     if by_project.is_empty() {
@@ -79,9 +76,7 @@ mod tests {
 
     #[test]
     fn single_project() {
-        let branches = vec![
-            branch("my-branch", "staging", "ACTIVE_HEALTHY"),
-        ];
+        let branches = vec![branch("my-branch", "staging", "ACTIVE_HEALTHY")];
         let output = render_branch_tree(&branches);
         assert_eq!(output, "staging\n└── my-branch (ACTIVE_HEALTHY)");
     }
