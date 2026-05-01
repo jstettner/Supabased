@@ -101,10 +101,7 @@ impl SupabaseClient {
 
     /// List all branches for a project.
     /// `GET /v1/projects/{project_ref}/branches`
-    pub async fn list_branches(
-        &self,
-        project_ref: &str,
-    ) -> Result<Vec<BranchResponse>, Status> {
+    pub async fn list_branches(&self, project_ref: &str) -> Result<Vec<BranchResponse>, Status> {
         let client = reqwest::Client::new();
         let url = format!("{BASE_URL}/v1/projects/{project_ref}/branches");
 
@@ -158,10 +155,7 @@ impl SupabaseClient {
 
     /// Get API keys for a branch (each branch is its own project).
     /// `GET /v1/projects/{branch_ref}/api-keys`
-    pub async fn get_api_keys(
-        &self,
-        branch_ref: &str,
-    ) -> Result<Vec<ApiKeyResponse>, Status> {
+    pub async fn get_api_keys(&self, branch_ref: &str) -> Result<Vec<ApiKeyResponse>, Status> {
         let client = reqwest::Client::new();
         let url = format!("{BASE_URL}/v1/projects/{branch_ref}/api-keys");
 
@@ -197,17 +191,13 @@ pub fn extract_credentials(
 ) -> Result<BranchCredentialSet, Status> {
     let anon_key = keys
         .iter()
-        .find(|k| {
-            k.name.as_deref() == Some("anon")
-                || k.key_type.as_deref() == Some("publishable")
-        })
+        .find(|k| k.name.as_deref() == Some("anon") || k.key_type.as_deref() == Some("publishable"))
         .ok_or_else(|| Status::internal("no anon/publishable key found in API keys response"))?;
 
     let service_role_key = keys
         .iter()
         .find(|k| {
-            k.name.as_deref() == Some("service_role")
-                || k.key_type.as_deref() == Some("secret")
+            k.name.as_deref() == Some("service_role") || k.key_type.as_deref() == Some("secret")
         })
         .ok_or_else(|| Status::internal("no service_role/secret key found in API keys response"))?;
 

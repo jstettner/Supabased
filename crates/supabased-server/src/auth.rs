@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use tonic::{Request, Status};
 
@@ -49,10 +49,7 @@ pub fn create_token(
     Ok((token, exp))
 }
 
-pub fn verify_token(
-    secret: &[u8],
-    token: &str,
-) -> Result<Claims, jsonwebtoken::errors::Error> {
+pub fn verify_token(secret: &[u8], token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
     let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret),
@@ -83,9 +80,9 @@ impl tonic::service::Interceptor for JwtInterceptor {
     fn call(&mut self, mut req: Request<()>) -> Result<Request<()>, Status> {
         let token = match req.metadata().get("authorization") {
             Some(val) => {
-                let val = val.to_str().map_err(|_| {
-                    Status::unauthenticated("invalid authorization header")
-                })?;
+                let val = val
+                    .to_str()
+                    .map_err(|_| Status::unauthenticated("invalid authorization header"))?;
                 val.strip_prefix("Bearer ")
                     .ok_or_else(|| Status::unauthenticated("expected Bearer token"))?
                     .to_string()
@@ -98,9 +95,8 @@ impl tonic::service::Interceptor for JwtInterceptor {
             }
         };
 
-        let claims = verify_token(&self.secret, &token).map_err(|e| {
-            Status::unauthenticated(format!("invalid token: {e}"))
-        })?;
+        let claims = verify_token(&self.secret, &token)
+            .map_err(|e| Status::unauthenticated(format!("invalid token: {e}")))?;
 
         req.extensions_mut().insert(AuthContext {
             identity: claims.sub,
@@ -169,25 +165,29 @@ mod tests {
     #[test]
     fn require_permission_or_owner_grants_with_any() {
         let c = ctx("github:alice", &["branches.delete_any"]);
-        assert!(require_permission_or_owner(
-            &c,
-            "branches.delete_own",
-            "branches.delete_any",
-            "github:bob", // not the owner, but has _any
-        )
-        .is_ok());
+        assert!(
+            require_permission_or_owner(
+                &c,
+                "branches.delete_own",
+                "branches.delete_any",
+                "github:bob", // not the owner, but has _any
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn require_permission_or_owner_grants_own_when_owner() {
         let c = ctx("github:alice", &["branches.delete_own"]);
-        assert!(require_permission_or_owner(
-            &c,
-            "branches.delete_own",
-            "branches.delete_any",
-            "github:alice", // is the owner
-        )
-        .is_ok());
+        assert!(
+            require_permission_or_owner(
+                &c,
+                "branches.delete_own",
+                "branches.delete_any",
+                "github:alice", // is the owner
+            )
+            .is_ok()
+        );
     }
 
     #[test]

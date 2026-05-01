@@ -22,26 +22,25 @@ pub fn load_config(path: &str) -> Result<(ServerConfig, String), String> {
     let contents = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read config file {path}: {e}"))?;
 
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let config_hash = format!("{:x}", Sha256::digest(contents.as_bytes()));
 
-    let config: ServerConfig =
-        toml::from_str(&contents).map_err(|e| format!("failed to parse config file {path}: {e}"))?;
+    let config: ServerConfig = toml::from_str(&contents)
+        .map_err(|e| format!("failed to parse config file {path}: {e}"))?;
     if config.projects.is_empty() {
-        return Err(format!("config file {path} must define at least one [[projects]] entry"));
+        return Err(format!(
+            "config file {path} must define at least one [[projects]] entry"
+        ));
     }
-    config
-        .projects
-        .iter()
-        .try_for_each(|p| {
-            if p.name.is_empty() {
-                Err(format!("project entry in {path} has empty name"))
-            } else if p.project_ref.is_empty() {
-                Err(format!("project '{}' in {path} has empty ref", p.name))
-            } else {
-                Ok(())
-            }
-        })?;
+    config.projects.iter().try_for_each(|p| {
+        if p.name.is_empty() {
+            Err(format!("project entry in {path} has empty name"))
+        } else if p.project_ref.is_empty() {
+            Err(format!("project '{}' in {path} has empty ref", p.name))
+        } else {
+            Ok(())
+        }
+    })?;
     Ok((config, config_hash))
 }
 
@@ -105,8 +104,14 @@ ref = "qrstuvwxyz123456"
     fn resolve_project_finds_match() {
         let config = ServerConfig {
             projects: vec![
-                ProjectConfig { name: "staging".into(), project_ref: "abc".into() },
-                ProjectConfig { name: "prod".into(), project_ref: "xyz".into() },
+                ProjectConfig {
+                    name: "staging".into(),
+                    project_ref: "abc".into(),
+                },
+                ProjectConfig {
+                    name: "prod".into(),
+                    project_ref: "xyz".into(),
+                },
             ],
         };
         let p = config.resolve_project("staging").unwrap();
@@ -116,9 +121,10 @@ ref = "qrstuvwxyz123456"
     #[test]
     fn resolve_project_returns_none_for_unknown() {
         let config = ServerConfig {
-            projects: vec![
-                ProjectConfig { name: "staging".into(), project_ref: "abc".into() },
-            ],
+            projects: vec![ProjectConfig {
+                name: "staging".into(),
+                project_ref: "abc".into(),
+            }],
         };
         assert!(config.resolve_project("unknown").is_none());
     }

@@ -26,9 +26,8 @@ pub fn load_session() -> Result<Session, String> {
         )
     })?;
 
-    let session: Session = serde_json::from_str(&contents).map_err(|e| {
-        format!("corrupt session file at {}: {e}", path.display())
-    })?;
+    let session: Session = serde_json::from_str(&contents)
+        .map_err(|e| format!("corrupt session file at {}: {e}", path.display()))?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

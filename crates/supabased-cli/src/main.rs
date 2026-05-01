@@ -1,7 +1,7 @@
 mod config;
+mod dotenv;
 mod session;
 mod tree;
-mod dotenv;
 
 use std::io::{self, Write};
 
@@ -10,9 +10,8 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 use supabased_proto::supabased::supabased_client::SupabasedClient;
 use supabased_proto::supabased::{
-    WhoAmIRequest,
-    ListProjectsRequest, CreateBranchRequest, ListBranchesRequest,
-    DeleteBranchRequest, GetBranchCredentialsRequest,
+    CreateBranchRequest, DeleteBranchRequest, GetBranchCredentialsRequest, ListBranchesRequest,
+    ListProjectsRequest, WhoAmIRequest,
 };
 
 #[derive(Debug, Parser)]
@@ -240,9 +239,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Update cache
             let mut cfg_updated = config::load_config();
             cfg_updated.cached_projects = Some(
-                reply.projects
+                reply
+                    .projects
                     .iter()
-                    .map(|p| config::CachedProject { name: p.name.clone() })
+                    .map(|p| config::CachedProject {
+                        name: p.name.clone(),
+                    })
                     .collect(),
             );
             cfg_updated.config_version = version;

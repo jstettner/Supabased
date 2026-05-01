@@ -1,16 +1,16 @@
-mod db;
 mod auth;
+mod config;
+mod db;
 mod github;
 mod rate_limit;
 mod service;
-mod config;
 mod supabase;
 
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 
-use supabased_proto::supabased::supabased_server::SupabasedServer;
-use service::SupabasedService;
 use auth::make_interceptor;
+use service::SupabasedService;
+use supabased_proto::supabased::supabased_server::SupabasedServer;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,8 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     });
 
-    let config_path = std::env::var("SUPABASED_CONFIG")
-        .unwrap_or_else(|_| "supabased.toml".to_string());
+    let config_path =
+        std::env::var("SUPABASED_CONFIG").unwrap_or_else(|_| "supabased.toml".to_string());
     let (server_config, config_hash) = config::load_config(&config_path).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -41,7 +41,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::env::var("BIND_ADDR")
         .unwrap_or_else(|_| "[::]:50051".to_string())
         .parse()?;
-    let svc = SupabasedService::new(conn, jwt_secret.clone(), github_org, supabase_client, server_config, config_hash);
+    let svc = SupabasedService::new(
+        conn,
+        jwt_secret.clone(),
+        github_org,
+        supabase_client,
+        server_config,
+        config_hash,
+    );
     let interceptor = make_interceptor(jwt_secret);
 
     let mut server = Server::builder();

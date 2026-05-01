@@ -154,9 +154,7 @@ pub async fn list_branches_by_project(
     .await
 }
 
-pub async fn list_all_branches(
-    conn: &Connection,
-) -> Result<Vec<BranchRecord>, TokioRusqliteError> {
+pub async fn list_all_branches(conn: &Connection) -> Result<Vec<BranchRecord>, TokioRusqliteError> {
     conn.call(|conn| -> Result<Vec<BranchRecord>, rusqlite::Error> {
         let mut stmt = conn.prepare(
             "SELECT branch_name, project_name, creator_identity, branch_ref, created_at FROM branches ORDER BY project_name, created_at",
@@ -208,7 +206,10 @@ mod tests {
         record_branch(&conn, "my-branch", "staging", "github:alice", "ref-abc")
             .await
             .unwrap();
-        let branch = get_branch(&conn, "my-branch", "staging").await.unwrap().unwrap();
+        let branch = get_branch(&conn, "my-branch", "staging")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(branch.branch_name, "my-branch");
         assert_eq!(branch.project_name, "staging");
         assert_eq!(branch.creator_identity, "github:alice");
@@ -225,9 +226,15 @@ mod tests {
     #[tokio::test]
     async fn list_branches_returns_correct_subset() {
         let conn = test_conn().await;
-        record_branch(&conn, "b1", "staging", "github:alice", "ref-1").await.unwrap();
-        record_branch(&conn, "b2", "staging", "github:bob", "ref-2").await.unwrap();
-        record_branch(&conn, "b3", "production", "github:alice", "ref-3").await.unwrap();
+        record_branch(&conn, "b1", "staging", "github:alice", "ref-1")
+            .await
+            .unwrap();
+        record_branch(&conn, "b2", "staging", "github:bob", "ref-2")
+            .await
+            .unwrap();
+        record_branch(&conn, "b3", "production", "github:alice", "ref-3")
+            .await
+            .unwrap();
 
         let staging = list_branches_by_project(&conn, "staging").await.unwrap();
         assert_eq!(staging.len(), 2);
@@ -240,7 +247,9 @@ mod tests {
     #[tokio::test]
     async fn delete_branch_removes_row() {
         let conn = test_conn().await;
-        record_branch(&conn, "b1", "staging", "github:alice", "ref-1").await.unwrap();
+        record_branch(&conn, "b1", "staging", "github:alice", "ref-1")
+            .await
+            .unwrap();
         let deleted = delete_branch(&conn, "b1", "staging").await.unwrap();
         assert!(deleted);
         let result = get_branch(&conn, "b1", "staging").await.unwrap();
@@ -250,26 +259,40 @@ mod tests {
     #[tokio::test]
     async fn delete_branch_returns_false_for_nonexistent() {
         let conn = test_conn().await;
-        let deleted = delete_branch(&conn, "nonexistent", "staging").await.unwrap();
+        let deleted = delete_branch(&conn, "nonexistent", "staging")
+            .await
+            .unwrap();
         assert!(!deleted);
     }
 
     #[tokio::test]
     async fn same_branch_name_different_projects() {
         let conn = test_conn().await;
-        record_branch(&conn, "feature", "staging", "github:alice", "ref-1").await.unwrap();
-        record_branch(&conn, "feature", "production", "github:alice", "ref-2").await.unwrap();
+        record_branch(&conn, "feature", "staging", "github:alice", "ref-1")
+            .await
+            .unwrap();
+        record_branch(&conn, "feature", "production", "github:alice", "ref-2")
+            .await
+            .unwrap();
 
-        let s = get_branch(&conn, "feature", "staging").await.unwrap().unwrap();
+        let s = get_branch(&conn, "feature", "staging")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(s.branch_ref, "ref-1");
-        let p = get_branch(&conn, "feature", "production").await.unwrap().unwrap();
+        let p = get_branch(&conn, "feature", "production")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(p.branch_ref, "ref-2");
     }
 
     #[tokio::test]
     async fn duplicate_branch_same_project_fails() {
         let conn = test_conn().await;
-        record_branch(&conn, "feature", "staging", "github:alice", "ref-1").await.unwrap();
+        record_branch(&conn, "feature", "staging", "github:alice", "ref-1")
+            .await
+            .unwrap();
         let result = record_branch(&conn, "feature", "staging", "github:bob", "ref-2").await;
         assert!(result.is_err());
     }

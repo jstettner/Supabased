@@ -1,17 +1,14 @@
 use std::time::Duration;
 
-use tonic::{Request, Response, Status};
 use tokio_rusqlite::Connection;
+use tonic::{Request, Response, Status};
 
 use supabased_proto::supabased::{
-    supabased_server::Supabased,
-    FinishGithubDeviceAuthRequest, FinishGithubDeviceAuthResponse,
-    StartGithubDeviceAuthRequest, StartGithubDeviceAuthResponse, WhoAmIRequest, WhoAmIResponse,
-    ListProjectsRequest, ListProjectsResponse,
-    CreateBranchRequest, CreateBranchResponse,
-    ListBranchesRequest, ListBranchesResponse,
-    DeleteBranchRequest, DeleteBranchResponse,
-    GetBranchCredentialsRequest, BranchCredentials,
+    BranchCredentials, CreateBranchRequest, CreateBranchResponse, DeleteBranchRequest,
+    DeleteBranchResponse, FinishGithubDeviceAuthRequest, FinishGithubDeviceAuthResponse,
+    GetBranchCredentialsRequest, ListBranchesRequest, ListBranchesResponse, ListProjectsRequest,
+    ListProjectsResponse, StartGithubDeviceAuthRequest, StartGithubDeviceAuthResponse,
+    WhoAmIRequest, WhoAmIResponse, supabased_server::Supabased,
 };
 
 use crate::auth::{AuthContext, require_permission, require_permission_or_owner};
@@ -42,7 +39,15 @@ impl SupabasedService {
     ) -> Self {
         let rate_limiter = RateLimiter::new(5, Duration::from_secs(60));
         rate_limiter.spawn_cleanup_task();
-        Self { db, jwt_secret, github_org, rate_limiter, supabase_client, config, config_hash }
+        Self {
+            db,
+            jwt_secret,
+            github_org,
+            rate_limiter,
+            supabase_client,
+            config,
+            config_hash,
+        }
     }
 
     fn with_config_version<T>(&self, mut response: Response<T>) -> Response<T> {
@@ -74,14 +79,18 @@ impl Supabased for SupabasedService {
         &self,
         _request: Request<StartGithubDeviceAuthRequest>,
     ) -> Result<Response<StartGithubDeviceAuthResponse>, Status> {
-        Err(Status::unimplemented("GitHub OAuth device auth not wired yet"))
+        Err(Status::unimplemented(
+            "GitHub OAuth device auth not wired yet",
+        ))
     }
 
     async fn finish_github_device_auth(
         &self,
         _request: Request<FinishGithubDeviceAuthRequest>,
     ) -> Result<Response<FinishGithubDeviceAuthResponse>, Status> {
-        Err(Status::unimplemented("GitHub OAuth device auth not wired yet"))
+        Err(Status::unimplemented(
+            "GitHub OAuth device auth not wired yet",
+        ))
     }
 
     async fn list_projects(
@@ -122,9 +131,7 @@ impl Supabased for SupabasedService {
         let project = self
             .config
             .resolve_project(&req.project_name)
-            .ok_or_else(|| {
-                Status::not_found(format!("unknown project: {}", req.project_name))
-            })?;
+            .ok_or_else(|| Status::not_found(format!("unknown project: {}", req.project_name)))?;
 
         let branch_resp = self
             .supabase_client
@@ -146,14 +153,16 @@ impl Supabased for SupabasedService {
         .await
         .map_err(|e| Status::internal(format!("failed to record branch: {e}")))?;
 
-        Ok(self.with_config_version(Response::new(CreateBranchResponse {
-            branch: Some(supabased_proto::supabased::BranchInfo {
-                branch_name: req.branch_name,
-                project_name: req.project_name,
-                status: branch_resp.status.unwrap_or_default(),
-                created_at: branch_resp.created_at.unwrap_or_default(),
-            }),
-        })))
+        Ok(
+            self.with_config_version(Response::new(CreateBranchResponse {
+                branch: Some(supabased_proto::supabased::BranchInfo {
+                    branch_name: req.branch_name,
+                    project_name: req.project_name,
+                    status: branch_resp.status.unwrap_or_default(),
+                    created_at: branch_resp.created_at.unwrap_or_default(),
+                }),
+            })),
+        )
     }
 
     async fn list_branches(
