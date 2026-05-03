@@ -16,6 +16,8 @@ use supabased_proto::supabased::{
     StartGithubDeviceAuthRequest, WhoAmIRequest, finish_github_device_auth_response,
 };
 
+const DEFAULT_SERVER_URL: &str = "http://[::1]:50051";
+
 #[derive(Debug, Parser)]
 #[command(name = "supabased", version, about = "Supabased CLI")]
 struct Cli {
@@ -169,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
-                .unwrap_or("http://[::1]:50051");
+                .unwrap_or(DEFAULT_SERVER_URL);
             eprint!("Server URL [{current_server}]: ");
             io::stderr().flush()?;
 
@@ -247,7 +249,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
-                .unwrap_or("http://[::1]:50051");
+                .unwrap_or(DEFAULT_SERVER_URL);
             let mut client = connect(server, ca_cert.as_deref()).await?;
 
             let mut request = tonic::Request::new(WhoAmIRequest {});
@@ -276,7 +278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
-                .unwrap_or("http://[::1]:50051");
+                .unwrap_or(DEFAULT_SERVER_URL);
             let mut client = connect(server, ca_cert.as_deref()).await?;
 
             let mut request = tonic::Request::new(ListProjectsRequest {});
@@ -322,7 +324,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
-                .unwrap_or("http://[::1]:50051");
+                .unwrap_or(DEFAULT_SERVER_URL);
             let mut client = connect(server, ca_cert.as_deref()).await?;
 
             let mut request = tonic::Request::new(CreateBranchRequest {
@@ -356,7 +358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
-                .unwrap_or("http://[::1]:50051");
+                .unwrap_or(DEFAULT_SERVER_URL);
             let mut client = connect(server, ca_cert.as_deref()).await?;
 
             let mut request = tonic::Request::new(ListBranchesRequest {
@@ -384,7 +386,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
-                .unwrap_or("http://[::1]:50051");
+                .unwrap_or(DEFAULT_SERVER_URL);
             let mut client = connect(server, ca_cert.as_deref()).await?;
 
             let mut request = tonic::Request::new(DeleteBranchRequest {
@@ -411,7 +413,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
-                .unwrap_or("http://[::1]:50051");
+                .unwrap_or(DEFAULT_SERVER_URL);
             let mut client = connect(server, ca_cert.as_deref()).await?;
 
             let mut request = tonic::Request::new(GetBranchCredentialsRequest {
@@ -430,7 +432,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Branch: {}/{}", creds.project_name, creds.branch_name);
             println!("  SUPABASE_URL={}", creds.api_url);
             println!("  SUPABASE_KEY={}", creds.anon_key);
-            println!("  SUPABASE_SECRET_KEY={}", creds.service_role_key);
 
             let block = dotenv::format_supabase_block(
                 &creds.project_name,
@@ -441,7 +442,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             let dotenv_path = std::env::current_dir()?.join(".env");
             dotenv::update_dotenv(&dotenv_path, &block)?;
-            println!("\nWritten to {}", dotenv_path.display());
+            println!(
+                "\nWrote Supabase credentials, including the service-role key, to {}",
+                dotenv_path.display()
+            );
         }
     }
 

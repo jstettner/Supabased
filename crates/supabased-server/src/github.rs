@@ -1,7 +1,9 @@
 use serde::Deserialize;
+use std::time::Duration;
 use tonic::Status;
 
 const USER_AGENT: &str = "supabased-server";
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Deserialize)]
 pub struct GitHubUser {
@@ -47,7 +49,7 @@ struct DeviceAuthError {
 }
 
 pub async fn validate_token(token: &str) -> Result<GitHubUser, Status> {
-    let client = reqwest::Client::new();
+    let client = http_client()?;
 
     let response = client
         .get("https://api.github.com/user")
@@ -83,6 +85,7 @@ pub async fn validate_token(token: &str) -> Result<GitHubUser, Status> {
 pub async fn check_org_membership(token: &str, org: &str, username: &str) -> Result<(), Status> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .timeout(HTTP_TIMEOUT)
         .build()
         .map_err(|e| Status::internal(format!("failed to build HTTP client: {e}")))?;
 
@@ -116,7 +119,7 @@ pub async fn check_org_membership(token: &str, org: &str, username: &str) -> Res
 
 pub async fn start_device_auth(client_id: &str, scope: &str) -> Result<DeviceAuthStart, Status> {
     let params = [("client_id", client_id), ("scope", scope)];
-    let response = reqwest::Client::new()
+    let response = http_client()?
         .post("https://github.com/login/device/code")
         .header("User-Agent", USER_AGENT)
         .header("Accept", "application/json")
@@ -138,7 +141,7 @@ pub async fn poll_device_auth(
         ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
     ];
 
-    let response = reqwest::Client::new()
+    let response = http_client()?
         .post("https://github.com/login/oauth/access_token")
         .header("User-Agent", USER_AGENT)
         .header("Accept", "application/json")
@@ -148,6 +151,13 @@ pub async fn poll_device_auth(
         .map_err(|e| Status::unavailable(format!("GitHub OAuth request failed: {e}")))?;
 
     parse_device_auth_poll_response(response).await
+}
+
+fn http_client() -> Result<reqwest::Client, Status> {
+    reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| Status::internal(format!("failed to build GitHub HTTP client: {e}")))
 }
 
 async fn parse_device_auth_start_response(

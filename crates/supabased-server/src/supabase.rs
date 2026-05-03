@@ -1,7 +1,9 @@
 use serde::Deserialize;
+use std::time::Duration;
 use tonic::Status;
 
 const BASE_URL: &str = "https://api.supabase.com";
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct SupabaseClient {
     token: String,
@@ -55,6 +57,13 @@ impl SupabaseClient {
         Self { token }
     }
 
+    fn http_client() -> Result<reqwest::Client, Status> {
+        reqwest::Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .map_err(|e| Status::internal(format!("failed to build Supabase HTTP client: {e}")))
+    }
+
     /// Create a branch with data from a parent project.
     /// `POST /v1/projects/{project_ref}/branches`
     pub async fn create_branch(
@@ -62,7 +71,7 @@ impl SupabaseClient {
         project_ref: &str,
         branch_name: &str,
     ) -> Result<BranchResponse, Status> {
-        let client = reqwest::Client::new();
+        let client = Self::http_client()?;
         let url = format!("{BASE_URL}/v1/projects/{project_ref}/branches");
 
         let body = serde_json::json!({
@@ -103,7 +112,7 @@ impl SupabaseClient {
     /// List all branches for a project.
     /// `GET /v1/projects/{project_ref}/branches`
     pub async fn list_branches(&self, project_ref: &str) -> Result<Vec<BranchResponse>, Status> {
-        let client = reqwest::Client::new();
+        let client = Self::http_client()?;
         let url = format!("{BASE_URL}/v1/projects/{project_ref}/branches");
 
         let response = client
@@ -132,7 +141,7 @@ impl SupabaseClient {
     /// `DELETE /v1/branches/{branch_ref}`
     /// NOTE: This is NOT `/v1/projects/{ref}/branches` which disables branching entirely.
     pub async fn delete_branch(&self, branch_ref: &str) -> Result<(), Status> {
-        let client = reqwest::Client::new();
+        let client = Self::http_client()?;
         let url = format!("{BASE_URL}/v1/branches/{branch_ref}");
 
         let response = client
@@ -157,7 +166,7 @@ impl SupabaseClient {
     /// Get API keys for a branch (each branch is its own project).
     /// `GET /v1/projects/{branch_ref}/api-keys`
     pub async fn get_api_keys(&self, branch_ref: &str) -> Result<Vec<ApiKeyResponse>, Status> {
-        let client = reqwest::Client::new();
+        let client = Self::http_client()?;
         let url = format!("{BASE_URL}/v1/projects/{branch_ref}/api-keys");
 
         let response = client

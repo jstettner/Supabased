@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 const BLOCK_START: &str = "# Supabase Configuration";
@@ -42,6 +44,21 @@ pub fn update_dotenv(path: &Path, block: &str) -> Result<(), Box<dyn std::error:
     } else {
         fs::write(path, format!("{block}\n"))?;
     }
+    restrict_owner_only(path)?;
+    Ok(())
+}
+
+fn restrict_owner_only(path: &Path) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+
     Ok(())
 }
 

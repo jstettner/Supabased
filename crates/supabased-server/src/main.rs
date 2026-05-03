@@ -6,6 +6,8 @@ mod rate_limit;
 mod service;
 mod supabase;
 
+use std::net::SocketAddr;
+
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 
 use auth::make_interceptor;
@@ -42,9 +44,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let supabase_client = supabase::SupabaseClient::new(supabase_token);
 
-    let addr = std::env::var("BIND_ADDR")
-        .unwrap_or_else(|_| "[::]:50051".to_string())
-        .parse()?;
+    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "[::1]:50051".to_string());
+    let addr: SocketAddr = bind_addr.parse()?;
     let svc = SupabasedService::new(
         conn,
         jwt_secret.clone(),
@@ -78,6 +79,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Server listening on {addr} (TLS)");
         }
         (None, None) => {
+            if !addr.ip().is_loopback() {
+                eprintln!(
+                    "error: TLS_CERT and TLS_KEY are required when binding plaintext outside loopback"
+                );
+                std::process::exit(1);
+            }
             println!("Server listening on {addr} (plaintext)");
         }
         _ => {
