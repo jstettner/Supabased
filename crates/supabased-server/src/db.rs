@@ -22,6 +22,18 @@ const MIGRATIONS: &[M<'static>] = &[
             PRIMARY KEY (branch_name, project_name)
         );",
     ),
+    M::up(
+        "CREATE TABLE refresh_sessions (
+            selector TEXT PRIMARY KEY,
+            token_hash BLOB NOT NULL,
+            identity TEXT NOT NULL,
+            permissions_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            last_used_at INTEGER,
+            revoked_at INTEGER
+        );",
+    ),
 ];
 
 pub async fn init_db(path: &str) -> Result<Connection, Box<dyn std::error::Error>> {
@@ -222,6 +234,143 @@ pub async fn delete_branch(
     .await
 }
 
+#[derive(Debug)]
+pub struct RefreshSessionRecord {
+    pub selector: String,
+    pub token_hash: Vec<u8>,
+    pub identity: String,
+    pub permissions_json: String,
+    pub expires_at: i64,
+    pub revoked_at: Option<i64>,
+}
+
+pub async fn insert_refresh_session(
+    conn: &Connection,
+    selector: &str,
+    token_hash: &[u8],
+    identity: &str,
+    permissions: &[String],
+    now: i64,
+    expires_at: i64,
+) -> Result<(), TokioRusqliteError> {
+    let selector = selector.to_string();
+    let token_hash = token_hash.to_vec();
+    let identity = identity.to_string();
+    let permissions_json =
+        serde_json::to_string(permissions).expect("serializing refresh permissions cannot fail");
+
+    conn.call(move |conn| -> Result<(), rusqlite::Error> {
+        conn.execute(
+            "INSERT INTO refresh_sessions
+                (selector, token_hash, identity, permissions_json, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                selector,
+                token_hash,
+                identity,
+                permissions_json,
+                now,
+                expires_at
+            ],
+        )?;
+        Ok(())
+    })
+    .await
+}
+
+pub async fn get_refresh_session(
+    conn: &Connection,
+    selector: &str,
+) -> Result<Option<RefreshSessionRecord>, TokioRusqliteError> {
+    let selector = selector.to_string();
+    conn.call(
+        move |conn| -> Result<Option<RefreshSessionRecord>, rusqlite::Error> {
+            conn.query_row(
+                "SELECT selector, token_hash, identity, permissions_json, expires_at, revoked_at
+                 FROM refresh_sessions WHERE selector = ?1",
+                rusqlite::params![selector],
+                |row| {
+                    Ok(RefreshSessionRecord {
+                        selector: row.get(0)?,
+                        token_hash: row.get(1)?,
+                        identity: row.get(2)?,
+                        permissions_json: row.get(3)?,
+                        expires_at: row.get(4)?,
+                        revoked_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+        },
+    )
+    .await
+}
+
+pub async fn rotate_refresh_session(
+    conn: &Connection,
+    old_selector: &str,
+    new_selector: &str,
+    new_token_hash: &[u8],
+    identity: &str,
+    permissions: &[String],
+    now: i64,
+    expires_at: i64,
+) -> Result<(), TokioRusqliteError> {
+    let old_selector = old_selector.to_string();
+    let new_selector = new_selector.to_string();
+    let new_token_hash = new_token_hash.to_vec();
+    let identity = identity.to_string();
+    let permissions_json =
+        serde_json::to_string(permissions).expect("serializing refresh permissions cannot fail");
+
+    conn.call(move |conn| -> Result<(), rusqlite::Error> {
+        let tx = conn.transaction()?;
+        let rows = tx.execute(
+            "UPDATE refresh_sessions
+             SET revoked_at = ?1, last_used_at = ?1
+             WHERE selector = ?2 AND revoked_at IS NULL",
+            rusqlite::params![now, old_selector],
+        )?;
+        if rows == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        tx.execute(
+            "INSERT INTO refresh_sessions
+                (selector, token_hash, identity, permissions_json, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                new_selector,
+                new_token_hash,
+                identity,
+                permissions_json,
+                now,
+                expires_at
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    })
+    .await
+}
+
+pub async fn revoke_refresh_session(
+    conn: &Connection,
+    selector: &str,
+    now: i64,
+) -> Result<bool, TokioRusqliteError> {
+    let selector = selector.to_string();
+    conn.call(move |conn| -> Result<bool, rusqlite::Error> {
+        let rows = conn.execute(
+            "UPDATE refresh_sessions
+             SET revoked_at = ?1
+             WHERE selector = ?2 AND revoked_at IS NULL",
+            rusqlite::params![now, selector],
+        )?;
+        Ok(rows > 0)
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,5 +474,96 @@ mod tests {
             .unwrap();
         let result = record_branch(&conn, "feature", "staging", "github:bob", "ref-2").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn refresh_session_stores_hash_only() {
+        let conn = test_conn().await;
+        let permissions = vec!["branches.list".to_string()];
+        insert_refresh_session(
+            &conn,
+            "selector",
+            b"hashed-secret",
+            "github:alice",
+            &permissions,
+            10,
+            20,
+        )
+        .await
+        .unwrap();
+
+        let session = get_refresh_session(&conn, "selector")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.selector, "selector");
+        assert_eq!(session.token_hash, b"hashed-secret");
+        assert_eq!(session.identity, "github:alice");
+        assert_eq!(session.permissions_json, r#"["branches.list"]"#);
+        assert_eq!(session.expires_at, 20);
+        assert_eq!(session.revoked_at, None);
+    }
+
+    #[tokio::test]
+    async fn rotate_refresh_session_revokes_old_and_inserts_new() {
+        let conn = test_conn().await;
+        let permissions = vec!["branches.list".to_string()];
+        insert_refresh_session(
+            &conn,
+            "old",
+            b"old-hash",
+            "github:alice",
+            &permissions,
+            10,
+            20,
+        )
+        .await
+        .unwrap();
+
+        rotate_refresh_session(
+            &conn,
+            "old",
+            "new",
+            b"new-hash",
+            "github:alice",
+            &permissions,
+            15,
+            45,
+        )
+        .await
+        .unwrap();
+
+        let old = get_refresh_session(&conn, "old").await.unwrap().unwrap();
+        let new = get_refresh_session(&conn, "new").await.unwrap().unwrap();
+        assert_eq!(old.revoked_at, Some(15));
+        assert_eq!(new.revoked_at, None);
+        assert_eq!(new.token_hash, b"new-hash");
+        assert_eq!(new.expires_at, 45);
+    }
+
+    #[tokio::test]
+    async fn revoke_refresh_session_marks_active_session() {
+        let conn = test_conn().await;
+        let permissions = vec!["branches.list".to_string()];
+        insert_refresh_session(
+            &conn,
+            "selector",
+            b"hash",
+            "github:alice",
+            &permissions,
+            10,
+            20,
+        )
+        .await
+        .unwrap();
+
+        assert!(revoke_refresh_session(&conn, "selector", 18).await.unwrap());
+        assert!(!revoke_refresh_session(&conn, "selector", 19).await.unwrap());
+
+        let session = get_refresh_session(&conn, "selector")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.revoked_at, Some(18));
     }
 }

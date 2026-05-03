@@ -5,6 +5,8 @@ service Supabased {
   rpc WhoAmI (WhoAmIRequest) returns (WhoAmIResponse);
   rpc StartGithubDeviceAuth (StartGithubDeviceAuthRequest) returns (StartGithubDeviceAuthResponse);
   rpc FinishGithubDeviceAuth (FinishGithubDeviceAuthRequest) returns (FinishGithubDeviceAuthResponse);
+  rpc RefreshSession (RefreshSessionRequest) returns (AuthResponse);
+  rpc Logout (LogoutRequest) returns (LogoutResponse);
   rpc ListProjects (ListProjectsRequest) returns (ListProjectsResponse);
   rpc CreateBranch (CreateBranchRequest) returns (CreateBranchResponse);
   rpc ListBranches (ListBranchesRequest) returns (ListBranchesResponse);
@@ -57,6 +59,20 @@ message AuthResponse {
   string identity = 2;
   repeated string permissions = 3;
   int64 expires_at = 4;
+  string refresh_token = 5;
+  int64 refresh_expires_at = 6;
+}
+
+message RefreshSessionRequest {
+  string refresh_token = 1;
+}
+
+message LogoutRequest {
+  string refresh_token = 1;
+}
+
+message LogoutResponse {
+  bool revoked = 1;
 }
 
 // Project listing (config-driven, no Supabase API call)

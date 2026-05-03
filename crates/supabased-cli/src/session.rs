@@ -8,6 +8,10 @@ pub struct Session {
     pub session_token: String,
     pub identity: String,
     pub expires_at: i64,
+    #[serde(default)]
+    pub refresh_token: String,
+    #[serde(default)]
+    pub refresh_expires_at: i64,
 }
 
 pub fn session_path() -> PathBuf {
@@ -34,7 +38,7 @@ pub fn load_session() -> Result<Session, String> {
         .unwrap()
         .as_secs() as i64;
 
-    if session.expires_at <= now {
+    if session.refresh_token.is_empty() || session.refresh_expires_at <= now {
         return Err("session expired — run `supabased login` again".to_string());
     }
 
@@ -50,4 +54,13 @@ pub fn save_session(session: &Session) -> Result<(), Box<dyn std::error::Error>>
     fs::write(&path, json)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     Ok(())
+}
+
+pub fn delete_session() -> Result<(), Box<dyn std::error::Error>> {
+    let path = session_path();
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Box::new(e)),
+    }
 }
