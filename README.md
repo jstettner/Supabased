@@ -38,12 +38,18 @@ On the server, issue a Tailscale HTTPS certificate:
 sudo tailscale cert your-host.your-tailnet.ts.net
 ```
 
-Install the generated files somewhere readable by the server process, for example:
+Place the generated files somewhere readable by the server process. The `install`
+commands below copy the files and set permissions in one step; moving the files
+manually is also fine as long as `TLS_CERT` and `TLS_KEY` point to the final paths.
 
 ```bash
+sudo mkdir -p /etc/supabased
 sudo install -m 0644 your-host.your-tailnet.ts.net.crt /etc/supabased/your-host.your-tailnet.ts.net.crt
 sudo install -m 0600 your-host.your-tailnet.ts.net.key /etc/supabased/your-host.your-tailnet.ts.net.key
 ```
+
+The certificate can be world-readable, but the private key should be readable
+only by the user that runs the server.
 
 Start the server bound to the Tailscale IP with TLS enabled:
 
