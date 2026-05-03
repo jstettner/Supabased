@@ -12,8 +12,9 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 use supabased_proto::supabased::supabased_client::SupabasedClient;
 use supabased_proto::supabased::{
     CreateBranchRequest, DeleteBranchRequest, FinishGithubDeviceAuthRequest,
-    GetBranchCredentialsRequest, ListBranchesRequest, ListProjectsRequest,
-    StartGithubDeviceAuthRequest, WhoAmIRequest, finish_github_device_auth_response,
+    GetBranchCredentialsRequest, ListBranchesRequest, ListProjectsRequest, LogoutRequest,
+    RefreshSessionRequest, StartGithubDeviceAuthRequest, WhoAmIRequest,
+    finish_github_device_auth_response,
 };
 
 const DEFAULT_SERVER_URL: &str = "http://[::1]:50051";
@@ -36,6 +37,8 @@ struct Cli {
 enum Commands {
     /// Authenticate with GitHub
     Login,
+    /// Revoke the current refresh session and remove local credentials
+    Logout,
     /// Show identity and permissions
     Whoami,
     /// Project management commands
@@ -122,6 +125,52 @@ fn extract_config_version(metadata: &tonic::metadata::MetadataMap) -> Option<Str
         .get("x-config-version")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+async fn refresh_cli_session(
+    client: &mut SupabasedClient<tonic::transport::Channel>,
+    sess: &mut session::Session,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response = client
+        .refresh_session(tonic::Request::new(RefreshSessionRequest {
+            refresh_token: sess.refresh_token.clone(),
+        }))
+        .await
+        .map_err(|_| "session expired — run `supabased login` again")?
+        .into_inner();
+
+    sess.session_token = response.session_token;
+    sess.identity = response.identity;
+    sess.expires_at = response.expires_at;
+    sess.refresh_token = response.refresh_token;
+    sess.refresh_expires_at = response.refresh_expires_at;
+    session::save_session(sess)?;
+    Ok(())
+}
+
+async fn load_fresh_session(
+    client: &mut SupabasedClient<tonic::transport::Channel>,
+) -> Result<session::Session, Box<dyn std::error::Error>> {
+    let mut sess = session::load_session().unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    });
+
+    if sess.expires_at <= now_unix() + 300 {
+        if let Err(e) = refresh_cli_session(client, &mut sess).await {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    Ok(sess)
 }
 
 async fn refresh_project_cache(
@@ -232,6 +281,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 session_token: reply.session_token,
                 identity: reply.identity.clone(),
                 expires_at: reply.expires_at,
+                refresh_token: reply.refresh_token,
+                refresh_expires_at: reply.refresh_expires_at,
             };
             session::save_session(&sess)?;
 
@@ -239,18 +290,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Session stored at {}", session::session_path().display());
         }
 
-        Commands::Whoami => {
-            let sess = session::load_session().unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            });
+        Commands::Logout => {
+            let server = cli
+                .server
+                .as_deref()
+                .or(cfg.server_url.as_deref())
+                .unwrap_or(DEFAULT_SERVER_URL);
 
+            if let Ok(sess) = session::load_session() {
+                let mut client = connect(server, ca_cert.as_deref()).await?;
+                let _ = client
+                    .logout(tonic::Request::new(LogoutRequest {
+                        refresh_token: sess.refresh_token,
+                    }))
+                    .await;
+            }
+
+            session::delete_session()?;
+            println!("Logged out.");
+        }
+
+        Commands::Whoami => {
             let server = cli
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
                 .unwrap_or(DEFAULT_SERVER_URL);
             let mut client = connect(server, ca_cert.as_deref()).await?;
+            let sess = load_fresh_session(&mut client).await?;
 
             let mut request = tonic::Request::new(WhoAmIRequest {});
             request.metadata_mut().insert(
@@ -269,17 +336,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Project(ProjectCommands::List) => {
-            let sess = session::load_session().unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            });
-
             let server = cli
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
                 .unwrap_or(DEFAULT_SERVER_URL);
             let mut client = connect(server, ca_cert.as_deref()).await?;
+            let sess = load_fresh_session(&mut client).await?;
 
             let mut request = tonic::Request::new(ListProjectsRequest {});
             request
@@ -315,17 +378,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Branch(BranchCommands::Create { project, name }) => {
-            let sess = session::load_session().unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            });
-
             let server = cli
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
                 .unwrap_or(DEFAULT_SERVER_URL);
             let mut client = connect(server, ca_cert.as_deref()).await?;
+            let sess = load_fresh_session(&mut client).await?;
 
             let mut request = tonic::Request::new(CreateBranchRequest {
                 project_name: project,
@@ -349,17 +408,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Branch(BranchCommands::List { project }) => {
-            let sess = session::load_session().unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            });
-
             let server = cli
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
                 .unwrap_or(DEFAULT_SERVER_URL);
             let mut client = connect(server, ca_cert.as_deref()).await?;
+            let sess = load_fresh_session(&mut client).await?;
 
             let mut request = tonic::Request::new(ListBranchesRequest {
                 project_name: project.unwrap_or_default(),
@@ -377,17 +432,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Branch(BranchCommands::Delete { project, name }) => {
-            let sess = session::load_session().unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            });
-
             let server = cli
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
                 .unwrap_or(DEFAULT_SERVER_URL);
             let mut client = connect(server, ca_cert.as_deref()).await?;
+            let sess = load_fresh_session(&mut client).await?;
 
             let mut request = tonic::Request::new(DeleteBranchRequest {
                 project_name: project.clone(),
@@ -404,17 +455,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Branch(BranchCommands::Credentials { project, name }) => {
-            let sess = session::load_session().unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            });
-
             let server = cli
                 .server
                 .as_deref()
                 .or(cfg.server_url.as_deref())
                 .unwrap_or(DEFAULT_SERVER_URL);
             let mut client = connect(server, ca_cert.as_deref()).await?;
+            let sess = load_fresh_session(&mut client).await?;
 
             let mut request = tonic::Request::new(GetBranchCredentialsRequest {
                 project_name: project,

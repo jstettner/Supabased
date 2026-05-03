@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rand::{RngCore, rngs::OsRng};
+use sha2::{Digest, Sha256};
 
 use tokio_rusqlite::Connection;
 use tonic::{Request, Response, Status};
@@ -12,7 +13,8 @@ use supabased_proto::supabased::{
     DeleteBranchRequest, DeleteBranchResponse, FinishGithubDeviceAuthRequest,
     FinishGithubDeviceAuthResponse, GetBranchCredentialsRequest, GithubDeviceAuthPending,
     ListBranchesRequest, ListBranchesResponse, ListProjectsRequest, ListProjectsResponse,
-    StartGithubDeviceAuthRequest, StartGithubDeviceAuthResponse, WhoAmIRequest, WhoAmIResponse,
+    LogoutRequest, LogoutResponse, RefreshSessionRequest, StartGithubDeviceAuthRequest,
+    StartGithubDeviceAuthResponse, WhoAmIRequest, WhoAmIResponse,
     finish_github_device_auth_response, supabased_server::Supabased,
 };
 
@@ -23,6 +25,8 @@ use crate::github;
 use crate::rate_limit::RateLimiter;
 use crate::supabase;
 use crate::supabase::SupabaseClient;
+
+const REFRESH_TOKEN_TTL_SECONDS: i64 = 30 * 24 * 3600;
 
 #[derive(Clone)]
 struct GithubDeviceSession {
@@ -117,9 +121,75 @@ impl SupabasedService {
 }
 
 fn generate_auth_session_id() -> String {
+    random_hex(32)
+}
+
+fn random_hex(len: usize) -> String {
     let mut bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut bytes);
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    bytes[..len.min(bytes.len())]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+fn hash_refresh_secret(secret: &str) -> Vec<u8> {
+    Sha256::digest(secret.as_bytes()).to_vec()
+}
+
+fn generate_refresh_token() -> (String, String, Vec<u8>) {
+    let selector = random_hex(16);
+    let secret = random_hex(32);
+    let token_hash = hash_refresh_secret(&secret);
+    (format!("{selector}.{secret}"), selector, token_hash)
+}
+
+fn parse_refresh_token(token: &str) -> Result<(&str, &str), Status> {
+    token
+        .split_once('.')
+        .filter(|(selector, secret)| !selector.is_empty() && !secret.is_empty())
+        .ok_or_else(|| Status::unauthenticated("invalid refresh token"))
+}
+
+async fn issue_auth_response(
+    db: &Connection,
+    jwt_secret: &[u8],
+    identity: String,
+    permissions: Vec<String>,
+) -> Result<AuthResponse, Status> {
+    let (session_token, expires_at) = auth::create_token(jwt_secret, &identity, &permissions)
+        .map_err(|e| Status::internal(format!("token creation failed: {e}")))?;
+    let (refresh_token, selector, token_hash) = generate_refresh_token();
+    let now = now_unix();
+    let refresh_expires_at = now + REFRESH_TOKEN_TTL_SECONDS;
+
+    db::insert_refresh_session(
+        db,
+        &selector,
+        &token_hash,
+        &identity,
+        &permissions,
+        now,
+        refresh_expires_at,
+    )
+    .await
+    .map_err(|e| Status::internal(format!("failed to create refresh session: {e}")))?;
+
+    Ok(AuthResponse {
+        session_token,
+        identity,
+        permissions,
+        expires_at,
+        refresh_token,
+        refresh_expires_at,
+    })
 }
 
 fn pending_response(interval: i64) -> FinishGithubDeviceAuthResponse {
@@ -213,22 +283,79 @@ impl Supabased for SupabasedService {
                     .iter()
                     .map(|p| p.to_string())
                     .collect::<Vec<_>>();
-                let (token, expires_at) =
-                    auth::create_token(&self.jwt_secret, &identity, &permissions)
-                        .map_err(|e| Status::internal(format!("token creation failed: {e}")))?;
+                let auth =
+                    issue_auth_response(&self.db, &self.jwt_secret, identity, permissions).await?;
                 self.remove_device_session(&auth_session_id);
                 Ok(Response::new(FinishGithubDeviceAuthResponse {
-                    result: Some(finish_github_device_auth_response::Result::Auth(
-                        AuthResponse {
-                            session_token: token,
-                            identity,
-                            permissions,
-                            expires_at,
-                        },
-                    )),
+                    result: Some(finish_github_device_auth_response::Result::Auth(auth)),
                 }))
             }
         }
+    }
+
+    async fn refresh_session(
+        &self,
+        request: Request<RefreshSessionRequest>,
+    ) -> Result<Response<AuthResponse>, Status> {
+        let refresh_token = request.into_inner().refresh_token;
+        let (selector, secret) = parse_refresh_token(&refresh_token)?;
+        let record = db::get_refresh_session(&self.db, selector)
+            .await
+            .map_err(|e| Status::internal(format!("database error: {e}")))?
+            .ok_or_else(|| Status::unauthenticated("invalid refresh token"))?;
+
+        let now = now_unix();
+        if record.revoked_at.is_some() || record.expires_at <= now {
+            return Err(Status::unauthenticated(
+                "refresh session expired — run `supabased login` again",
+            ));
+        }
+
+        if record.token_hash != hash_refresh_secret(secret) {
+            return Err(Status::unauthenticated("invalid refresh token"));
+        }
+
+        let permissions: Vec<String> = serde_json::from_str(&record.permissions_json)
+            .map_err(|e| Status::internal(format!("stored permissions are invalid: {e}")))?;
+        let (session_token, expires_at) =
+            auth::create_token(&self.jwt_secret, &record.identity, &permissions)
+                .map_err(|e| Status::internal(format!("token creation failed: {e}")))?;
+        let (new_refresh_token, new_selector, new_token_hash) = generate_refresh_token();
+        let refresh_expires_at = now + REFRESH_TOKEN_TTL_SECONDS;
+
+        db::rotate_refresh_session(
+            &self.db,
+            &record.selector,
+            &new_selector,
+            &new_token_hash,
+            &record.identity,
+            &permissions,
+            now,
+            refresh_expires_at,
+        )
+        .await
+        .map_err(|e| Status::internal(format!("failed to rotate refresh session: {e}")))?;
+
+        Ok(Response::new(AuthResponse {
+            session_token,
+            identity: record.identity,
+            permissions,
+            expires_at,
+            refresh_token: new_refresh_token,
+            refresh_expires_at,
+        }))
+    }
+
+    async fn logout(
+        &self,
+        request: Request<LogoutRequest>,
+    ) -> Result<Response<LogoutResponse>, Status> {
+        let refresh_token = request.into_inner().refresh_token;
+        let (selector, _) = parse_refresh_token(&refresh_token)?;
+        let revoked = db::revoke_refresh_session(&self.db, selector, now_unix())
+            .await
+            .map_err(|e| Status::internal(format!("database error: {e}")))?;
+        Ok(Response::new(LogoutResponse { revoked }))
     }
 
     async fn list_projects(
@@ -464,6 +591,23 @@ mod oauth_session_tests {
             panic!("expected pending response");
         };
         assert_eq!(pending.interval, 1);
+    }
+
+    #[test]
+    fn refresh_token_has_selector_and_secret() {
+        let (token, selector, token_hash) = generate_refresh_token();
+        let (parsed_selector, parsed_secret) = parse_refresh_token(&token).unwrap();
+        assert_eq!(parsed_selector, selector);
+        assert_eq!(token_hash, hash_refresh_secret(parsed_secret));
+        assert_ne!(selector, parsed_secret);
+    }
+
+    #[test]
+    fn malformed_refresh_token_is_rejected() {
+        assert!(parse_refresh_token("").is_err());
+        assert!(parse_refresh_token("selector-only").is_err());
+        assert!(parse_refresh_token(".secret").is_err());
+        assert!(parse_refresh_token("selector.").is_err());
     }
 
     #[test]
