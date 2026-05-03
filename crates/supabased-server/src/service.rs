@@ -182,6 +182,10 @@ impl Supabased for SupabasedService {
         &self,
         request: Request<FinishGithubDeviceAuthRequest>,
     ) -> Result<Response<FinishGithubDeviceAuthResponse>, Status> {
+        if let Some(addr) = request.remote_addr() {
+            self.rate_limiter.check_rate_limit(addr.ip())?;
+        }
+
         let auth_session_id = request.into_inner().auth_session_id;
         if auth_session_id.is_empty() {
             return Err(Status::invalid_argument("auth_session_id required"));

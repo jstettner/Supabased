@@ -1,4 +1,6 @@
 use rusqlite_migration::{M, Migrations};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use tokio_rusqlite::rusqlite;
 use tokio_rusqlite::{Connection, Error as TokioRusqliteError, OptionalExtension};
 
@@ -23,7 +25,9 @@ const MIGRATIONS: &[M<'static>] = &[
 ];
 
 pub async fn init_db(path: &str) -> Result<Connection, Box<dyn std::error::Error>> {
+    harden_db_file_permissions(path)?;
     let conn = Connection::open(path).await?;
+    harden_db_family_permissions(path)?;
 
     conn.call(|conn| -> Result<(), rusqlite::Error> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -42,7 +46,30 @@ pub async fn init_db(path: &str) -> Result<Connection, Box<dyn std::error::Error
     })
     .await?;
 
+    harden_db_family_permissions(path)?;
+
     Ok(conn)
+}
+
+fn harden_db_family_permissions(path: &str) -> Result<(), std::io::Error> {
+    if path == ":memory:" {
+        return Ok(());
+    }
+
+    harden_db_file_permissions(path)?;
+    harden_db_file_permissions(&format!("{path}-wal"))?;
+    harden_db_file_permissions(&format!("{path}-shm"))?;
+
+    Ok(())
+}
+
+fn harden_db_file_permissions(path: &str) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    if std::path::Path::new(path).exists() {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(())
 }
 
 pub async fn ensure_jwt_secret(conn: &Connection) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
