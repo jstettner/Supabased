@@ -98,6 +98,14 @@ message BranchInfo {
   string project_name = 2;
   string status = 3;
   string created_at = 4;
+  BranchOwnership ownership = 5;
+}
+
+enum BranchOwnership {
+  BRANCH_OWNERSHIP_UNSPECIFIED = 0;
+  BRANCH_OWNERSHIP_YOURS = 1;
+  BRANCH_OWNERSHIP_OTHER = 2;
+  BRANCH_OWNERSHIP_UNTRACKED = 3;
 }
 
 message ListBranchesRequest {
