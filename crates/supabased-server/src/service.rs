@@ -9,7 +9,7 @@ use tokio_rusqlite::Connection;
 use tonic::{Request, Response, Status};
 
 use supabased_proto::supabased::{
-    AuthResponse, BranchCredentials, CreateBranchRequest, CreateBranchResponse,
+    AuthResponse, BranchCredentials, BranchOwnership, CreateBranchRequest, CreateBranchResponse,
     DeleteBranchRequest, DeleteBranchResponse, FinishGithubDeviceAuthRequest,
     FinishGithubDeviceAuthResponse, GetBranchCredentialsRequest, GithubDeviceAuthPending,
     ListBranchesRequest, ListBranchesResponse, ListProjectsRequest, ListProjectsResponse,
@@ -138,6 +138,17 @@ fn now_unix() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+fn classify_branch_ownership(
+    ctx: &AuthContext,
+    record: Option<&db::BranchRecord>,
+) -> BranchOwnership {
+    match record {
+        Some(record) if record.creator_identity == ctx.identity => BranchOwnership::Yours,
+        Some(_) => BranchOwnership::Other,
+        None => BranchOwnership::Untracked,
+    }
 }
 
 fn hash_refresh_secret(secret: &str) -> Vec<u8> {
@@ -425,6 +436,7 @@ impl Supabased for SupabasedService {
                     project_name: req.project_name,
                     status: branch_resp.status.unwrap_or_default(),
                     created_at: branch_resp.created_at.unwrap_or_default(),
+                    ownership: BranchOwnership::Yours as i32,
                 }),
             })),
         )
@@ -437,9 +449,10 @@ impl Supabased for SupabasedService {
         let ctx = request
             .extensions()
             .get::<AuthContext>()
-            .ok_or_else(|| Status::unauthenticated("authentication required"))?;
+            .ok_or_else(|| Status::unauthenticated("authentication required"))?
+            .clone();
 
-        require_permission(ctx, "branches.list")?;
+        require_permission(&ctx, "branches.list")?;
 
         let req = request.into_inner();
 
@@ -455,6 +468,25 @@ impl Supabased for SupabasedService {
             vec![p]
         };
 
+        let tracked_records = if req.project_name.is_empty() {
+            db::list_all_branches(&self.db)
+                .await
+                .map_err(|e| Status::internal(format!("database error: {e}")))?
+        } else {
+            db::list_branches_by_project(&self.db, &req.project_name)
+                .await
+                .map_err(|e| Status::internal(format!("database error: {e}")))?
+        };
+        let tracked_by_branch: HashMap<(String, String), db::BranchRecord> = tracked_records
+            .into_iter()
+            .map(|record| {
+                (
+                    (record.project_name.clone(), record.branch_name.clone()),
+                    record,
+                )
+            })
+            .collect();
+
         let mut branches = Vec::new();
         for project in &projects {
             let api_branches = self
@@ -467,11 +499,17 @@ impl Supabased for SupabasedService {
                 if b.is_default == Some(true) {
                     continue;
                 }
+                let branch_name = b.name.unwrap_or_default();
+                let ownership = classify_branch_ownership(
+                    &ctx,
+                    tracked_by_branch.get(&(project.name.clone(), branch_name.clone())),
+                );
                 branches.push(supabased_proto::supabased::BranchInfo {
-                    branch_name: b.name.unwrap_or_default(),
+                    branch_name,
                     project_name: project.name.clone(),
                     status: b.status.unwrap_or_default(),
                     created_at: b.created_at.unwrap_or_default(),
+                    ownership: ownership as i32,
                 });
             }
         }
@@ -573,6 +611,55 @@ impl Supabased for SupabasedService {
 #[cfg(test)]
 mod oauth_session_tests {
     use super::*;
+
+    fn ctx(identity: &str) -> AuthContext {
+        AuthContext {
+            identity: identity.to_string(),
+            permissions: vec![],
+        }
+    }
+
+    fn branch_record(creator_identity: &str) -> db::BranchRecord {
+        db::BranchRecord {
+            branch_name: "feature".to_string(),
+            project_name: "staging".to_string(),
+            creator_identity: creator_identity.to_string(),
+            branch_ref: "branch-ref".to_string(),
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn classify_branch_ownership_marks_current_creator_as_yours() {
+        let ctx = ctx("github:alice");
+        let record = branch_record("github:alice");
+
+        assert_eq!(
+            classify_branch_ownership(&ctx, Some(&record)),
+            BranchOwnership::Yours
+        );
+    }
+
+    #[test]
+    fn classify_branch_ownership_marks_other_creator_as_other() {
+        let ctx = ctx("github:alice");
+        let record = branch_record("github:bob");
+
+        assert_eq!(
+            classify_branch_ownership(&ctx, Some(&record)),
+            BranchOwnership::Other
+        );
+    }
+
+    #[test]
+    fn classify_branch_ownership_marks_missing_record_as_untracked() {
+        let ctx = ctx("github:alice");
+
+        assert_eq!(
+            classify_branch_ownership(&ctx, None),
+            BranchOwnership::Untracked
+        );
+    }
 
     #[test]
     fn auth_session_id_has_hex_shape_and_is_unique() {
