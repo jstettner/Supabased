@@ -201,9 +201,7 @@ fn resolve_demo_project<'a>(
     config: &'a ServerConfig,
     project_name: &str,
 ) -> Result<&'a ProjectConfig, Status> {
-    let project = config
-        .resolve_project(project_name)
-        .ok_or_else(|| Status::not_found(format!("unknown project: {project_name}")))?;
+    let project = resolve_project(config, project_name)?;
     if project.is_demo_project() {
         Ok(project)
     } else {
@@ -211,6 +209,15 @@ fn resolve_demo_project<'a>(
             "project '{project_name}' is not configured for demo operations"
         )))
     }
+}
+
+fn resolve_project<'a>(
+    config: &'a ServerConfig,
+    project_name: &str,
+) -> Result<&'a ProjectConfig, Status> {
+    config
+        .resolve_project(project_name)
+        .ok_or_else(|| Status::not_found(format!("unknown project: {project_name}")))
 }
 
 fn validated_branch_ref(
@@ -497,7 +504,7 @@ impl Supabased for SupabasedService {
         require_permission(&ctx, "branches.create")?;
 
         let req = request.into_inner();
-        let project = resolve_demo_project(&self.config, &req.project_name)?;
+        let project = resolve_project(&self.config, &req.project_name)?;
 
         let branch_resp = self
             .supabase_client
@@ -956,6 +963,26 @@ mod oauth_session_tests {
         let err = require_restore_confirmation(false).unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
         assert!(require_restore_confirmation(true).is_ok());
+    }
+
+    #[test]
+    fn resolve_project_allows_non_demo_projects() {
+        let config = ServerConfig {
+            projects: vec![project_config("staging", false)],
+        };
+
+        let project = resolve_project(&config, "staging").unwrap();
+        assert_eq!(project.project_ref, "staging-ref");
+    }
+
+    #[test]
+    fn resolve_project_rejects_unknown_projects() {
+        let config = ServerConfig {
+            projects: vec![project_config("staging", false)],
+        };
+
+        let err = resolve_project(&config, "unknown").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
     }
 
     #[test]
