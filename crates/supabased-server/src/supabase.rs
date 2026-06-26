@@ -1,9 +1,18 @@
 use serde::Deserialize;
+use serde_json::Value;
 use std::time::Duration;
 use tonic::Status;
 
 const BASE_URL: &str = "https://api.supabase.com";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn create_branch_body(branch_name: &str) -> Value {
+    serde_json::json!({
+        "branch_name": branch_name,
+        "is_default": false,
+        "with_data": true,
+    })
+}
 
 pub struct SupabaseClient {
     token: String,
@@ -74,11 +83,7 @@ impl SupabaseClient {
         let client = Self::http_client()?;
         let url = format!("{BASE_URL}/v1/projects/{project_ref}/branches");
 
-        let body = serde_json::json!({
-            "branch_name": branch_name,
-            "git_branch": branch_name,
-            "with_data": true,
-        });
+        let body = create_branch_body(branch_name);
 
         let response = client
             .post(&url)
@@ -221,6 +226,16 @@ pub fn extract_credentials(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_branch_body_does_not_set_git_branch_metadata() {
+        let body = create_branch_body("demo/farmer");
+
+        assert_eq!(body["branch_name"], "demo/farmer");
+        assert_eq!(body["is_default"], false);
+        assert_eq!(body["with_data"], true);
+        assert!(body.get("git_branch").is_none());
+    }
 
     fn make_legacy_keys() -> Vec<ApiKeyResponse> {
         vec![
