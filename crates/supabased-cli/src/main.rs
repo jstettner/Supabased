@@ -9,12 +9,13 @@ use std::time::{Duration, Instant};
 use clap::{Parser, Subcommand};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
+use supabased_proto::supabased::ListDemoStatesRequest;
 use supabased_proto::supabased::supabased_client::SupabasedClient;
 use supabased_proto::supabased::{
     CreateBranchRequest, DeleteBranchRequest, FinishGithubDeviceAuthRequest,
     GetBranchCredentialsRequest, ListBranchesRequest, ListProjectsRequest, LogoutRequest,
-    RefreshSessionRequest, StartGithubDeviceAuthRequest, WhoAmIRequest,
-    finish_github_device_auth_response,
+    RefreshSessionRequest, RestoreDemoStateRequest, SaveDemoStateRequest,
+    StartGithubDeviceAuthRequest, WhoAmIRequest, finish_github_device_auth_response,
 };
 
 const DEFAULT_SERVER_URL: &str = "http://[::1]:50051";
@@ -47,6 +48,9 @@ enum Commands {
     /// Branch management commands
     #[command(subcommand)]
     Branch(BranchCommands),
+    /// Demo-state commands
+    #[command(subcommand)]
+    Demo(DemoCommands),
 }
 
 #[derive(Debug, Subcommand)]
@@ -86,6 +90,35 @@ enum BranchCommands {
         project: String,
         /// Name of the branch
         name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DemoCommands {
+    /// Save main project's current public schema data as a named demo state
+    Save {
+        /// Project to snapshot
+        #[arg(long)]
+        project: String,
+        /// Demo state name
+        name: String,
+    },
+    /// List saved demo states for a project
+    List {
+        /// Project to list
+        #[arg(long)]
+        project: String,
+    },
+    /// Restore a saved demo state's public schema data onto main
+    Restore {
+        /// Project to restore onto
+        #[arg(long)]
+        project: String,
+        /// Demo state name
+        name: String,
+        /// Confirm that main public schema data may be overwritten
+        #[arg(long)]
+        confirm_overwrite_main: bool,
     },
 }
 
@@ -132,6 +165,14 @@ fn now_unix() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+fn require_cli_restore_confirmation(confirm_overwrite_main: bool) -> Result<(), &'static str> {
+    if confirm_overwrite_main {
+        Ok(())
+    } else {
+        Err("restore refused: pass --confirm-overwrite-main to overwrite main public schema data")
+    }
 }
 
 async fn refresh_cli_session(
@@ -494,7 +535,125 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 dotenv_path.display()
             );
         }
+
+        Commands::Demo(DemoCommands::Save { project, name }) => {
+            let server = cli
+                .server
+                .as_deref()
+                .or(cfg.server_url.as_deref())
+                .unwrap_or(DEFAULT_SERVER_URL);
+            let mut client = connect(server, ca_cert.as_deref()).await?;
+            let sess = load_fresh_session(&mut client).await?;
+
+            let mut request = tonic::Request::new(SaveDemoStateRequest {
+                project_name: project,
+                name,
+            });
+            request
+                .metadata_mut()
+                .insert("authorization", auth_metadata(&sess.session_token)?);
+
+            let response = client.save_demo_state(request).await?;
+            let version = extract_config_version(response.metadata());
+            let reply = response.into_inner();
+            refresh_project_cache(&mut client, &sess.session_token, version).await;
+
+            if let Some(state) = reply.state {
+                println!(
+                    "Saved demo state '{}' for project '{}' as branch '{}'",
+                    state.name, state.project_name, state.branch_name
+                );
+            }
+        }
+
+        Commands::Demo(DemoCommands::List { project }) => {
+            let server = cli
+                .server
+                .as_deref()
+                .or(cfg.server_url.as_deref())
+                .unwrap_or(DEFAULT_SERVER_URL);
+            let mut client = connect(server, ca_cert.as_deref()).await?;
+            let sess = load_fresh_session(&mut client).await?;
+
+            let mut request = tonic::Request::new(ListDemoStatesRequest {
+                project_name: project,
+            });
+            request
+                .metadata_mut()
+                .insert("authorization", auth_metadata(&sess.session_token)?);
+
+            let response = client.list_demo_states(request).await?;
+            let version = extract_config_version(response.metadata());
+            let reply = response.into_inner();
+            refresh_project_cache(&mut client, &sess.session_token, version).await;
+
+            if reply.states.is_empty() {
+                println!("No demo states saved.");
+            } else {
+                println!("Saved demo states:");
+                for state in reply.states {
+                    let restored = if state.last_restored_at.is_empty() {
+                        "never".to_string()
+                    } else {
+                        state.last_restored_at
+                    };
+                    println!(
+                        "  {}  branch={}  created={}  last_restored={}",
+                        state.name, state.branch_name, state.created_at, restored
+                    );
+                }
+            }
+        }
+
+        Commands::Demo(DemoCommands::Restore {
+            project,
+            name,
+            confirm_overwrite_main,
+        }) => {
+            require_cli_restore_confirmation(confirm_overwrite_main)?;
+
+            let server = cli
+                .server
+                .as_deref()
+                .or(cfg.server_url.as_deref())
+                .unwrap_or(DEFAULT_SERVER_URL);
+            let mut client = connect(server, ca_cert.as_deref()).await?;
+            let sess = load_fresh_session(&mut client).await?;
+
+            let mut request = tonic::Request::new(RestoreDemoStateRequest {
+                project_name: project,
+                name,
+                confirm_overwrite_main,
+            });
+            request
+                .metadata_mut()
+                .insert("authorization", auth_metadata(&sess.session_token)?);
+
+            let response = client.restore_demo_state(request).await?;
+            let version = extract_config_version(response.metadata());
+            let reply = response.into_inner();
+            refresh_project_cache(&mut client, &sess.session_token, version).await;
+
+            if let Some(state) = reply.state {
+                println!(
+                    "Restored demo state '{}' onto project '{}'",
+                    state.name, state.project_name
+                );
+            }
+        }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_confirmation_flag_is_required_locally() {
+        let err = require_cli_restore_confirmation(false).unwrap_err();
+        assert!(err.contains("--confirm-overwrite-main"));
+        assert!(require_cli_restore_confirmation(true).is_ok());
+    }
 }

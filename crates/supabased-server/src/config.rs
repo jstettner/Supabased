@@ -5,16 +5,82 @@ pub struct ServerConfig {
     pub projects: Vec<ProjectConfig>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectDatabaseConnection {
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    pub user: String,
+    pub password: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProjectConfig {
     pub name: String,
     #[serde(rename = "ref")]
     pub project_ref: String,
+    #[serde(default)]
+    pub demo: bool,
+    pub database_password_env: Option<String>,
 }
 
 impl ServerConfig {
     pub fn resolve_project(&self, name: &str) -> Option<&ProjectConfig> {
         self.projects.iter().find(|p| p.name == name)
+    }
+}
+
+impl ProjectConfig {
+    pub fn is_demo_project(&self) -> bool {
+        self.demo
+    }
+
+    pub fn database_connection_for_ref(
+        &self,
+        project_ref: &str,
+    ) -> Result<ProjectDatabaseConnection, String> {
+        let password_env = self
+            .database_password_env
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "project '{}' is missing database_password_env for demo restore operations",
+                    self.name
+                )
+            })?;
+        let password = std::env::var(password_env).map_err(|_| {
+            format!("{password_env} environment variable is required for demo restore operations")
+        })?;
+
+        Ok(ProjectDatabaseConnection {
+            host: format!("db.{project_ref}.supabase.co"),
+            port: 5432,
+            database: "postgres".to_string(),
+            user: "postgres".to_string(),
+            password,
+        })
+    }
+
+    fn validate(&self, path: &str) -> Result<(), String> {
+        if self.name.is_empty() {
+            Err(format!("project entry in {path} has empty name"))
+        } else if self.project_ref.is_empty() {
+            Err(format!("project '{}' in {path} has empty ref", self.name))
+        } else if self.demo
+            && self
+                .database_password_env
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            Err(format!(
+                "project '{}' in {path} has demo=true but missing database_password_env",
+                self.name
+            ))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -32,15 +98,7 @@ pub fn load_config(path: &str) -> Result<(ServerConfig, String), String> {
             "config file {path} must define at least one [[projects]] entry"
         ));
     }
-    config.projects.iter().try_for_each(|p| {
-        if p.name.is_empty() {
-            Err(format!("project entry in {path} has empty name"))
-        } else if p.project_ref.is_empty() {
-            Err(format!("project '{}' in {path} has empty ref", p.name))
-        } else {
-            Ok(())
-        }
-    })?;
+    config.projects.iter().try_for_each(|p| p.validate(path))?;
     Ok((config, config_hash))
 }
 
@@ -107,10 +165,14 @@ ref = "qrstuvwxyz123456"
                 ProjectConfig {
                     name: "staging".into(),
                     project_ref: "abc".into(),
+                    demo: false,
+                    database_password_env: None,
                 },
                 ProjectConfig {
                     name: "prod".into(),
                     project_ref: "xyz".into(),
+                    demo: false,
+                    database_password_env: None,
                 },
             ],
         };
@@ -124,6 +186,8 @@ ref = "qrstuvwxyz123456"
             projects: vec![ProjectConfig {
                 name: "staging".into(),
                 project_ref: "abc".into(),
+                demo: false,
+                database_password_env: None,
             }],
         };
         assert!(config.resolve_project("unknown").is_none());
@@ -175,5 +239,156 @@ ref = "xyz"
         let (_, hash2) = load_config(path.to_str().unwrap()).unwrap();
 
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn omitted_demo_defaults_to_false() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+"#
+        )
+        .unwrap();
+
+        let (config, _) = load_config(f.path().to_str().unwrap()).unwrap();
+        assert!(!config.projects[0].demo);
+        assert!(config.projects[0].database_password_env.is_none());
+    }
+
+    #[test]
+    fn demo_project_requires_database_password_env() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+demo = true
+"#
+        )
+        .unwrap();
+
+        let err = load_config(f.path().to_str().unwrap()).unwrap_err();
+        assert!(err.contains("demo=true"));
+        assert!(err.contains("database_password_env"));
+    }
+
+    #[test]
+    fn non_demo_project_does_not_require_database_password_env() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+demo = false
+"#
+        )
+        .unwrap();
+
+        let (config, _) = load_config(f.path().to_str().unwrap()).unwrap();
+        assert!(!config.projects[0].is_demo_project());
+        assert!(config.projects[0].database_password_env.is_none());
+    }
+
+    #[test]
+    fn parses_demo_project_database_password_env() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+demo = true
+database_password_env = "STAGING_DB_PASSWORD"
+"#
+        )
+        .unwrap();
+
+        let (config, _) = load_config(f.path().to_str().unwrap()).unwrap();
+        assert!(config.projects[0].is_demo_project());
+        assert_eq!(
+            config.projects[0].database_password_env.as_deref(),
+            Some("STAGING_DB_PASSWORD")
+        );
+    }
+
+    #[test]
+    fn project_database_connection_uses_supabase_conventions() {
+        let env_name = "SUPABASED_TEST_DB_PASSWORD_CONNECTION";
+        unsafe {
+            std::env::set_var(env_name, "secret");
+        }
+        let config = ProjectConfig {
+            name: "staging".into(),
+            project_ref: "ref123".into(),
+            demo: true,
+            database_password_env: Some(env_name.into()),
+        };
+
+        let conn = config.database_connection_for_ref("branch456").unwrap();
+        unsafe {
+            std::env::remove_var(env_name);
+        }
+        assert_eq!(conn.host, "db.branch456.supabase.co");
+        assert_eq!(conn.port, 5432);
+        assert_eq!(conn.database, "postgres");
+        assert_eq!(conn.user, "postgres");
+        assert_eq!(conn.password, "secret");
+    }
+
+    #[test]
+    fn project_ref_maps_to_supabase_database_host() {
+        let env_name = "SUPABASED_TEST_DB_PASSWORD_PROJECT_REF";
+        unsafe {
+            std::env::set_var(env_name, "secret");
+        }
+        let config = ProjectConfig {
+            name: "staging".into(),
+            project_ref: "ref123".into(),
+            demo: true,
+            database_password_env: Some(env_name.into()),
+        };
+
+        let conn = config
+            .database_connection_for_ref(&config.project_ref)
+            .unwrap();
+        unsafe {
+            std::env::remove_var(env_name);
+        }
+        assert_eq!(conn.host, "db.ref123.supabase.co");
+    }
+
+    #[test]
+    fn database_password_env_is_required_when_rendering() {
+        let config = ProjectConfig {
+            name: "staging".into(),
+            project_ref: "abc".into(),
+            demo: true,
+            database_password_env: Some("SUPABASED_TEST_DB_PASSWORD_MISSING".into()),
+        };
+
+        let err = config.database_connection_for_ref("ref123").unwrap_err();
+        assert!(err.contains("SUPABASED_TEST_DB_PASSWORD_MISSING"));
+    }
+
+    #[test]
+    fn database_password_env_config_is_required_when_rendering() {
+        let config = ProjectConfig {
+            name: "staging".into(),
+            project_ref: "abc".into(),
+            demo: true,
+            database_password_env: None,
+        };
+
+        let err = config.database_connection_for_ref("ref123").unwrap_err();
+        assert!(err.contains("database_password_env"));
     }
 }

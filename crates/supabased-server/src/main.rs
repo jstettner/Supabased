@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod github;
 mod rate_limit;
+mod restore;
 mod service;
 mod supabase;
 

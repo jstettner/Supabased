@@ -34,6 +34,18 @@ const MIGRATIONS: &[M<'static>] = &[
             revoked_at INTEGER
         );",
     ),
+    M::up(
+        "CREATE TABLE demo_states (
+            project_name TEXT NOT NULL,
+            name TEXT NOT NULL,
+            branch_name TEXT NOT NULL,
+            branch_ref TEXT NOT NULL,
+            creator_identity TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_restored_at TEXT,
+            PRIMARY KEY (project_name, name)
+        );",
+    ),
 ];
 
 pub async fn init_db(path: &str) -> Result<Connection, Box<dyn std::error::Error>> {
@@ -232,6 +244,128 @@ pub async fn delete_branch(
         Ok(rows > 0)
     })
     .await
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct DemoStateRecord {
+    pub project_name: String,
+    pub name: String,
+    pub branch_name: String,
+    pub branch_ref: String,
+    pub creator_identity: String,
+    pub created_at: String,
+    pub last_restored_at: Option<String>,
+}
+
+pub async fn record_demo_state(
+    conn: &Connection,
+    project_name: &str,
+    name: &str,
+    branch_name: &str,
+    branch_ref: &str,
+    creator: &str,
+) -> Result<(), TokioRusqliteError> {
+    let project_name = project_name.to_string();
+    let name = name.to_string();
+    let branch_name = branch_name.to_string();
+    let branch_ref = branch_ref.to_string();
+    let creator = creator.to_string();
+    conn.call(move |conn| -> Result<(), rusqlite::Error> {
+        conn.execute(
+            "INSERT INTO demo_states
+                (project_name, name, branch_name, branch_ref, creator_identity)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![project_name, name, branch_name, branch_ref, creator],
+        )?;
+        Ok(())
+    })
+    .await
+}
+
+pub async fn get_demo_state(
+    conn: &Connection,
+    project_name: &str,
+    name: &str,
+) -> Result<Option<DemoStateRecord>, TokioRusqliteError> {
+    let project_name = project_name.to_string();
+    let name = name.to_string();
+    conn.call(
+        move |conn| -> Result<Option<DemoStateRecord>, rusqlite::Error> {
+            conn.query_row(
+                "SELECT project_name, name, branch_name, branch_ref, creator_identity, created_at, last_restored_at
+                 FROM demo_states
+                 WHERE project_name = ?1 AND name = ?2",
+                rusqlite::params![project_name, name],
+                demo_state_from_row,
+            )
+            .optional()
+        },
+    )
+    .await
+}
+
+pub async fn list_demo_states_by_project(
+    conn: &Connection,
+    project_name: &str,
+) -> Result<Vec<DemoStateRecord>, TokioRusqliteError> {
+    let project_name = project_name.to_string();
+    conn.call(move |conn| -> Result<Vec<DemoStateRecord>, rusqlite::Error> {
+        let mut stmt = conn.prepare(
+            "SELECT project_name, name, branch_name, branch_ref, creator_identity, created_at, last_restored_at
+             FROM demo_states
+             WHERE project_name = ?1
+             ORDER BY created_at, name",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![project_name], demo_state_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
+    .await
+}
+
+pub async fn mark_demo_state_restored(
+    conn: &Connection,
+    project_name: &str,
+    name: &str,
+) -> Result<Option<DemoStateRecord>, TokioRusqliteError> {
+    let project_name = project_name.to_string();
+    let name = name.to_string();
+    conn.call(
+        move |conn| -> Result<Option<DemoStateRecord>, rusqlite::Error> {
+            let rows = conn.execute(
+                "UPDATE demo_states
+                 SET last_restored_at = datetime('now')
+                 WHERE project_name = ?1 AND name = ?2",
+                rusqlite::params![project_name, name],
+            )?;
+            if rows == 0 {
+                return Ok(None);
+            }
+            conn.query_row(
+                "SELECT project_name, name, branch_name, branch_ref, creator_identity, created_at, last_restored_at
+                 FROM demo_states
+                 WHERE project_name = ?1 AND name = ?2",
+                rusqlite::params![project_name, name],
+                demo_state_from_row,
+            )
+            .optional()
+        },
+    )
+    .await
+}
+
+fn demo_state_from_row(row: &rusqlite::Row<'_>) -> Result<DemoStateRecord, rusqlite::Error> {
+    Ok(DemoStateRecord {
+        project_name: row.get(0)?,
+        name: row.get(1)?,
+        branch_name: row.get(2)?,
+        branch_ref: row.get(3)?,
+        creator_identity: row.get(4)?,
+        created_at: row.get(5)?,
+        last_restored_at: row.get(6)?,
+    })
 }
 
 #[derive(Debug)]
@@ -474,6 +608,88 @@ mod tests {
             .unwrap();
         let result = record_branch(&conn, "feature", "staging", "github:bob", "ref-2").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn record_get_and_list_demo_states() {
+        let conn = test_conn().await;
+        record_demo_state(
+            &conn,
+            "staging",
+            "happy path",
+            "demo/happy-path",
+            "branch-ref",
+            "github:alice",
+        )
+        .await
+        .unwrap();
+
+        let state = get_demo_state(&conn, "staging", "happy path")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.project_name, "staging");
+        assert_eq!(state.name, "happy path");
+        assert_eq!(state.branch_name, "demo/happy-path");
+        assert_eq!(state.branch_ref, "branch-ref");
+        assert_eq!(state.creator_identity, "github:alice");
+        assert_eq!(state.last_restored_at, None);
+
+        let states = list_demo_states_by_project(&conn, "staging").await.unwrap();
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].name, "happy path");
+    }
+
+    #[tokio::test]
+    async fn duplicate_demo_state_same_project_fails() {
+        let conn = test_conn().await;
+        record_demo_state(
+            &conn,
+            "staging",
+            "happy path",
+            "demo/happy-path",
+            "branch-ref",
+            "github:alice",
+        )
+        .await
+        .unwrap();
+
+        let result = record_demo_state(
+            &conn,
+            "staging",
+            "happy path",
+            "demo/happy-path-2",
+            "branch-ref-2",
+            "github:bob",
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn mark_demo_state_restored_updates_timestamp() {
+        let conn = test_conn().await;
+        record_demo_state(
+            &conn,
+            "staging",
+            "happy path",
+            "demo/happy-path",
+            "branch-ref",
+            "github:alice",
+        )
+        .await
+        .unwrap();
+
+        let state = mark_demo_state_restored(&conn, "staging", "happy path")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.last_restored_at.is_some());
+
+        let missing = mark_demo_state_restored(&conn, "staging", "missing")
+            .await
+            .unwrap();
+        assert!(missing.is_none());
     }
 
     #[tokio::test]

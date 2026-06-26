@@ -2,7 +2,14 @@
 # Each [[projects]] entry defines a Supabase project that branches can be created from.
 # The "name" is a human-readable label used in CLI commands.
 # The "ref" is the Supabase project reference (found in project settings).
+#
+# Demo operations are opt-in per project. Demo restore derives the database host
+# as db.<project-or-branch-ref>.supabase.co and reads the password from the named
+# server environment variable. Passwords are supplied to pg tools via a temporary
+# 0600 PGPASSFILE, not argv or supabased.toml.
 
 # [[projects]]
 # name = "staging"
 # ref = "abcdefghijklmnop"
+# demo = true
+# database_password_env = "STAGING_DB_PASSWORD"
