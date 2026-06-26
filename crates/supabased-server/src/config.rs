@@ -3,19 +3,6 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct ServerConfig {
     pub projects: Vec<ProjectConfig>,
-    pub database: Option<DatabaseConnectionConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct DatabaseConnectionConfig {
-    pub host_template: String,
-    #[serde(default = "default_database_name")]
-    pub name: String,
-    #[serde(default = "default_database_user")]
-    pub user: String,
-    #[serde(default = "default_database_port")]
-    pub port: u16,
-    pub password_env: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,57 +19,69 @@ pub struct ProjectConfig {
     pub name: String,
     #[serde(rename = "ref")]
     pub project_ref: String,
+    #[serde(default)]
+    pub demo: bool,
+    pub database_password_env: Option<String>,
 }
 
 impl ServerConfig {
     pub fn resolve_project(&self, name: &str) -> Option<&ProjectConfig> {
         self.projects.iter().find(|p| p.name == name)
     }
+}
 
-    pub fn database_connection_for_project_ref(
+impl ProjectConfig {
+    pub fn is_demo_project(&self) -> bool {
+        self.demo
+    }
+
+    pub fn database_connection_for_ref(
         &self,
         project_ref: &str,
     ) -> Result<ProjectDatabaseConnection, String> {
-        let config = self.database.as_ref().ok_or_else(|| {
-            "[database] config is required for demo restore operations".to_string()
-        })?;
-        let password = std::env::var(&config.password_env).map_err(|_| {
-            format!(
-                "{} environment variable is required for demo restore operations",
-                config.password_env
-            )
+        let password_env = self
+            .database_password_env
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "project '{}' is missing database_password_env for demo restore operations",
+                    self.name
+                )
+            })?;
+        let password = std::env::var(password_env).map_err(|_| {
+            format!("{password_env} environment variable is required for demo restore operations")
         })?;
 
-        Ok(config.connection_for_project_ref(project_ref, password))
-    }
-}
-
-impl DatabaseConnectionConfig {
-    pub fn connection_for_project_ref(
-        &self,
-        project_ref: &str,
-        password: String,
-    ) -> ProjectDatabaseConnection {
-        ProjectDatabaseConnection {
-            host: self.host_template.replace("{project_ref}", project_ref),
-            port: self.port,
-            database: self.name.clone(),
-            user: self.user.clone(),
+        Ok(ProjectDatabaseConnection {
+            host: format!("db.{project_ref}.supabase.co"),
+            port: 5432,
+            database: "postgres".to_string(),
+            user: "postgres".to_string(),
             password,
+        })
+    }
+
+    fn validate(&self, path: &str) -> Result<(), String> {
+        if self.name.is_empty() {
+            Err(format!("project entry in {path} has empty name"))
+        } else if self.project_ref.is_empty() {
+            Err(format!("project '{}' in {path} has empty ref", self.name))
+        } else if self.demo
+            && self
+                .database_password_env
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            Err(format!(
+                "project '{}' in {path} has demo=true but missing database_password_env",
+                self.name
+            ))
+        } else {
+            Ok(())
         }
     }
-}
-
-fn default_database_name() -> String {
-    "postgres".to_string()
-}
-
-fn default_database_user() -> String {
-    "postgres".to_string()
-}
-
-fn default_database_port() -> u16 {
-    5432
 }
 
 pub fn load_config(path: &str) -> Result<(ServerConfig, String), String> {
@@ -99,29 +98,7 @@ pub fn load_config(path: &str) -> Result<(ServerConfig, String), String> {
             "config file {path} must define at least one [[projects]] entry"
         ));
     }
-    config.projects.iter().try_for_each(|p| {
-        if p.name.is_empty() {
-            Err(format!("project entry in {path} has empty name"))
-        } else if p.project_ref.is_empty() {
-            Err(format!("project '{}' in {path} has empty ref", p.name))
-        } else {
-            Ok(())
-        }
-    })?;
-    if let Some(database) = &config.database {
-        if database.host_template.is_empty() {
-            return Err(format!("database.host_template in {path} is empty"));
-        }
-        if database.name.is_empty() {
-            return Err(format!("database.name in {path} is empty"));
-        }
-        if database.user.is_empty() {
-            return Err(format!("database.user in {path} is empty"));
-        }
-        if database.password_env.is_empty() {
-            return Err(format!("database.password_env in {path} is empty"));
-        }
-    }
+    config.projects.iter().try_for_each(|p| p.validate(path))?;
     Ok((config, config_hash))
 }
 
@@ -184,15 +161,18 @@ ref = "qrstuvwxyz123456"
     #[test]
     fn resolve_project_finds_match() {
         let config = ServerConfig {
-            database: None,
             projects: vec![
                 ProjectConfig {
                     name: "staging".into(),
                     project_ref: "abc".into(),
+                    demo: false,
+                    database_password_env: None,
                 },
                 ProjectConfig {
                     name: "prod".into(),
                     project_ref: "xyz".into(),
+                    demo: false,
+                    database_password_env: None,
                 },
             ],
         };
@@ -203,10 +183,11 @@ ref = "qrstuvwxyz123456"
     #[test]
     fn resolve_project_returns_none_for_unknown() {
         let config = ServerConfig {
-            database: None,
             projects: vec![ProjectConfig {
                 name: "staging".into(),
                 project_ref: "abc".into(),
+                demo: false,
+                database_password_env: None,
             }],
         };
         assert!(config.resolve_project("unknown").is_none());
@@ -261,50 +242,11 @@ ref = "xyz"
     }
 
     #[test]
-    fn renders_database_connection_config() {
-        let config = DatabaseConnectionConfig {
-            host_template: "db.{project_ref}.supabase.co".into(),
-            name: "postgres".into(),
-            user: "postgres".into(),
-            port: 5432,
-            password_env: "SUPABASE_DB_PASSWORD".into(),
-        };
-
-        let conn = config.connection_for_project_ref("ref123", "secret".into());
-        assert_eq!(conn.host, "db.ref123.supabase.co");
-        assert_eq!(conn.port, 5432);
-        assert_eq!(conn.database, "postgres");
-        assert_eq!(conn.user, "postgres");
-        assert_eq!(conn.password, "secret");
-    }
-
-    #[test]
-    fn database_config_is_required_when_rendering() {
-        let config = ServerConfig {
-            database: None,
-            projects: vec![ProjectConfig {
-                name: "staging".into(),
-                project_ref: "abc".into(),
-            }],
-        };
-
-        assert!(
-            config
-                .database_connection_for_project_ref("ref123")
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn parses_database_config_with_defaults() {
+    fn omitted_demo_defaults_to_false() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         write!(
             f,
             r#"
-[database]
-host_template = "db.{{project_ref}}.supabase.co"
-password_env = "SUPABASE_DB_PASSWORD"
-
 [[projects]]
 name = "staging"
 ref = "abcdefghijklmnop"
@@ -313,11 +255,140 @@ ref = "abcdefghijklmnop"
         .unwrap();
 
         let (config, _) = load_config(f.path().to_str().unwrap()).unwrap();
-        let database = config.database.unwrap();
-        assert_eq!(database.host_template, "db.{project_ref}.supabase.co");
-        assert_eq!(database.name, "postgres");
-        assert_eq!(database.user, "postgres");
-        assert_eq!(database.port, 5432);
-        assert_eq!(database.password_env, "SUPABASE_DB_PASSWORD");
+        assert!(!config.projects[0].demo);
+        assert!(config.projects[0].database_password_env.is_none());
+    }
+
+    #[test]
+    fn demo_project_requires_database_password_env() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+demo = true
+"#
+        )
+        .unwrap();
+
+        let err = load_config(f.path().to_str().unwrap()).unwrap_err();
+        assert!(err.contains("demo=true"));
+        assert!(err.contains("database_password_env"));
+    }
+
+    #[test]
+    fn non_demo_project_does_not_require_database_password_env() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+demo = false
+"#
+        )
+        .unwrap();
+
+        let (config, _) = load_config(f.path().to_str().unwrap()).unwrap();
+        assert!(!config.projects[0].is_demo_project());
+        assert!(config.projects[0].database_password_env.is_none());
+    }
+
+    #[test]
+    fn parses_demo_project_database_password_env() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+demo = true
+database_password_env = "STAGING_DB_PASSWORD"
+"#
+        )
+        .unwrap();
+
+        let (config, _) = load_config(f.path().to_str().unwrap()).unwrap();
+        assert!(config.projects[0].is_demo_project());
+        assert_eq!(
+            config.projects[0].database_password_env.as_deref(),
+            Some("STAGING_DB_PASSWORD")
+        );
+    }
+
+    #[test]
+    fn project_database_connection_uses_supabase_conventions() {
+        let env_name = "SUPABASED_TEST_DB_PASSWORD_CONNECTION";
+        unsafe {
+            std::env::set_var(env_name, "secret");
+        }
+        let config = ProjectConfig {
+            name: "staging".into(),
+            project_ref: "ref123".into(),
+            demo: true,
+            database_password_env: Some(env_name.into()),
+        };
+
+        let conn = config.database_connection_for_ref("branch456").unwrap();
+        unsafe {
+            std::env::remove_var(env_name);
+        }
+        assert_eq!(conn.host, "db.branch456.supabase.co");
+        assert_eq!(conn.port, 5432);
+        assert_eq!(conn.database, "postgres");
+        assert_eq!(conn.user, "postgres");
+        assert_eq!(conn.password, "secret");
+    }
+
+    #[test]
+    fn project_ref_maps_to_supabase_database_host() {
+        let env_name = "SUPABASED_TEST_DB_PASSWORD_PROJECT_REF";
+        unsafe {
+            std::env::set_var(env_name, "secret");
+        }
+        let config = ProjectConfig {
+            name: "staging".into(),
+            project_ref: "ref123".into(),
+            demo: true,
+            database_password_env: Some(env_name.into()),
+        };
+
+        let conn = config
+            .database_connection_for_ref(&config.project_ref)
+            .unwrap();
+        unsafe {
+            std::env::remove_var(env_name);
+        }
+        assert_eq!(conn.host, "db.ref123.supabase.co");
+    }
+
+    #[test]
+    fn database_password_env_is_required_when_rendering() {
+        let config = ProjectConfig {
+            name: "staging".into(),
+            project_ref: "abc".into(),
+            demo: true,
+            database_password_env: Some("SUPABASED_TEST_DB_PASSWORD_MISSING".into()),
+        };
+
+        let err = config.database_connection_for_ref("ref123").unwrap_err();
+        assert!(err.contains("SUPABASED_TEST_DB_PASSWORD_MISSING"));
+    }
+
+    #[test]
+    fn database_password_env_config_is_required_when_rendering() {
+        let config = ProjectConfig {
+            name: "staging".into(),
+            project_ref: "abc".into(),
+            demo: true,
+            database_password_env: None,
+        };
+
+        let err = config.database_connection_for_ref("ref123").unwrap_err();
+        assert!(err.contains("database_password_env"));
     }
 }

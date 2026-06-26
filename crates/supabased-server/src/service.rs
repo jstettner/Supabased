@@ -20,7 +20,7 @@ use supabased_proto::supabased::{
 };
 
 use crate::auth::{self, AuthContext, require_permission, require_permission_or_owner};
-use crate::config::ServerConfig;
+use crate::config::{ProjectConfig, ServerConfig};
 use crate::db;
 use crate::github;
 use crate::rate_limit::RateLimiter;
@@ -194,6 +194,22 @@ fn require_restore_confirmation(confirm_overwrite_main: bool) -> Result<(), Stat
         Err(Status::failed_precondition(
             "restore requires confirm_overwrite_main=true",
         ))
+    }
+}
+
+fn resolve_demo_project<'a>(
+    config: &'a ServerConfig,
+    project_name: &str,
+) -> Result<&'a ProjectConfig, Status> {
+    let project = config
+        .resolve_project(project_name)
+        .ok_or_else(|| Status::not_found(format!("unknown project: {project_name}")))?;
+    if project.is_demo_project() {
+        Ok(project)
+    } else {
+        Err(Status::failed_precondition(format!(
+            "project '{project_name}' is not configured for demo operations"
+        )))
     }
 }
 
@@ -450,10 +466,7 @@ impl Supabased for SupabasedService {
         require_permission(&ctx, "branches.create")?;
 
         let req = request.into_inner();
-        let project = self
-            .config
-            .resolve_project(&req.project_name)
-            .ok_or_else(|| Status::not_found(format!("unknown project: {}", req.project_name)))?;
+        let project = resolve_demo_project(&self.config, &req.project_name)?;
 
         let branch_resp = self
             .supabase_client
@@ -732,9 +745,7 @@ impl Supabased for SupabasedService {
         require_permission(&ctx, "demo.list")?;
 
         let req = request.into_inner();
-        self.config
-            .resolve_project(&req.project_name)
-            .ok_or_else(|| Status::not_found(format!("unknown project: {}", req.project_name)))?;
+        resolve_demo_project(&self.config, &req.project_name)?;
 
         let states = db::list_demo_states_by_project(&self.db, &req.project_name)
             .await
@@ -761,10 +772,7 @@ impl Supabased for SupabasedService {
 
         require_permission(&ctx, "demo.restore_main")?;
 
-        let project = self
-            .config
-            .resolve_project(&req.project_name)
-            .ok_or_else(|| Status::not_found(format!("unknown project: {}", req.project_name)))?;
+        let project = resolve_demo_project(&self.config, &req.project_name)?;
         let record = db::get_demo_state(&self.db, &req.project_name, &req.name)
             .await
             .map_err(|e| Status::internal(format!("database error: {e}")))?
@@ -775,13 +783,11 @@ impl Supabased for SupabasedService {
                 ))
             })?;
 
-        let source_connection = self
-            .config
-            .database_connection_for_project_ref(&record.branch_ref)
+        let source_connection = project
+            .database_connection_for_ref(&record.branch_ref)
             .map_err(Status::failed_precondition)?;
-        let target_connection = self
-            .config
-            .database_connection_for_project_ref(&project.project_ref)
+        let target_connection = project
+            .database_connection_for_ref(&project.project_ref)
             .map_err(Status::failed_precondition)?;
 
         tokio::task::spawn_blocking(move || {
@@ -821,6 +827,15 @@ mod oauth_session_tests {
             creator_identity: creator_identity.to_string(),
             branch_ref: "branch-ref".to_string(),
             created_at: "2026-05-03T00:00:00Z".to_string(),
+        }
+    }
+
+    fn project_config(name: &str, demo: bool) -> ProjectConfig {
+        ProjectConfig {
+            name: name.to_string(),
+            project_ref: format!("{name}-ref"),
+            demo,
+            database_password_env: demo.then(|| format!("{}_DB_PASSWORD", name.to_uppercase())),
         }
     }
 
@@ -899,6 +914,36 @@ mod oauth_session_tests {
         let err = require_restore_confirmation(false).unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
         assert!(require_restore_confirmation(true).is_ok());
+    }
+
+    #[test]
+    fn resolve_demo_project_rejects_non_demo_projects() {
+        let config = ServerConfig {
+            projects: vec![project_config("staging", false)],
+        };
+
+        let err = resolve_demo_project(&config, "staging").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[test]
+    fn resolve_demo_project_allows_demo_projects() {
+        let config = ServerConfig {
+            projects: vec![project_config("staging", true)],
+        };
+
+        let project = resolve_demo_project(&config, "staging").unwrap();
+        assert_eq!(project.project_ref, "staging-ref");
+    }
+
+    #[test]
+    fn resolve_demo_project_rejects_unknown_projects() {
+        let config = ServerConfig {
+            projects: vec![project_config("staging", true)],
+        };
+
+        let err = resolve_demo_project(&config, "unknown").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
     }
 
     #[test]

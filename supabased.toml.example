@@ -3,16 +3,13 @@
 # The "name" is a human-readable label used in CLI commands.
 # The "ref" is the Supabase project reference (found in project settings).
 #
-# Demo restore uses these settings to connect to main and saved demo branches.
-# The password is read from the server environment and supplied to pg tools via a
-# temporary 0600 PGPASSFILE, not argv or supabased.toml.
-# [database]
-# host_template = "db.{project_ref}.supabase.co"
-# name = "postgres"
-# user = "postgres"
-# port = 5432
-# password_env = "SUPABASE_DB_PASSWORD"
+# Demo operations are opt-in per project. Demo restore derives the database host
+# as db.<project-or-branch-ref>.supabase.co and reads the password from the named
+# server environment variable. Passwords are supplied to pg tools via a temporary
+# 0600 PGPASSFILE, not argv or supabased.toml.
 
 # [[projects]]
 # name = "staging"
 # ref = "abcdefghijklmnop"
+# demo = true
+# database_password_env = "STAGING_DB_PASSWORD"
