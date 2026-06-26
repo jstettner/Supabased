@@ -201,9 +201,7 @@ fn resolve_demo_project<'a>(
     config: &'a ServerConfig,
     project_name: &str,
 ) -> Result<&'a ProjectConfig, Status> {
-    let project = config
-        .resolve_project(project_name)
-        .ok_or_else(|| Status::not_found(format!("unknown project: {project_name}")))?;
+    let project = resolve_project(config, project_name)?;
     if project.is_demo_project() {
         Ok(project)
     } else {
@@ -211,6 +209,46 @@ fn resolve_demo_project<'a>(
             "project '{project_name}' is not configured for demo operations"
         )))
     }
+}
+
+fn resolve_project<'a>(
+    config: &'a ServerConfig,
+    project_name: &str,
+) -> Result<&'a ProjectConfig, Status> {
+    config
+        .resolve_project(project_name)
+        .ok_or_else(|| Status::not_found(format!("unknown project: {project_name}")))
+}
+
+fn validated_branch_ref(
+    branch_resp: &supabase::BranchResponse,
+    parent_project_ref: &str,
+) -> Result<String, Status> {
+    let branch_ref = branch_resp
+        .project_ref
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| Status::internal("Supabase branch response did not include project_ref"))?;
+
+    if branch_ref == parent_project_ref {
+        return Err(Status::failed_precondition(
+            "Supabase returned the parent project as the created branch",
+        ));
+    }
+
+    if branch_resp.parent_project_ref.as_deref() != Some(parent_project_ref) {
+        return Err(Status::failed_precondition(
+            "Supabase branch response parent did not match the configured project",
+        ));
+    }
+
+    if branch_resp.is_default != Some(false) {
+        return Err(Status::failed_precondition(
+            "Supabase branch response was not a non-default child branch",
+        ));
+    }
+
+    Ok(branch_ref.to_string())
 }
 
 fn hash_refresh_secret(secret: &str) -> Vec<u8> {
@@ -466,24 +504,21 @@ impl Supabased for SupabasedService {
         require_permission(&ctx, "branches.create")?;
 
         let req = request.into_inner();
-        let project = resolve_demo_project(&self.config, &req.project_name)?;
+        let project = resolve_project(&self.config, &req.project_name)?;
 
         let branch_resp = self
             .supabase_client
             .create_branch(&project.project_ref, &req.branch_name)
             .await?;
 
-        let branch_ref = branch_resp
-            .project_ref
-            .as_deref()
-            .unwrap_or(&branch_resp.id);
+        let branch_ref = validated_branch_ref(&branch_resp, &project.project_ref)?;
 
         db::record_branch(
             &self.db,
             &req.branch_name,
             &req.project_name,
             &ctx.identity,
-            branch_ref,
+            &branch_ref,
         )
         .await
         .map_err(|e| Status::internal(format!("failed to record branch: {e}")))?;
@@ -703,11 +738,7 @@ impl Supabased for SupabasedService {
             .supabase_client
             .create_branch(&project.project_ref, &branch_name)
             .await?;
-        let branch_ref = branch_resp
-            .project_ref
-            .as_deref()
-            .unwrap_or(&branch_resp.id)
-            .to_string();
+        let branch_ref = validated_branch_ref(&branch_resp, &project.project_ref)?;
 
         db::record_demo_state(
             &self.db,
@@ -839,6 +870,24 @@ mod oauth_session_tests {
         }
     }
 
+    fn created_branch_response(
+        project_ref: &str,
+        parent_project_ref: &str,
+        is_default: bool,
+    ) -> supabase::BranchResponse {
+        supabase::BranchResponse {
+            id: "branch-id".to_string(),
+            name: Some("demo/farmer".to_string()),
+            project_ref: Some(project_ref.to_string()),
+            parent_project_ref: Some(parent_project_ref.to_string()),
+            is_default: Some(is_default),
+            git_branch: Some("demo/farmer".to_string()),
+            status: Some("CREATING_PROJECT".to_string()),
+            created_at: Some("2026-06-26T16:52:22Z".to_string()),
+            updated_at: Some("2026-06-26T16:52:22Z".to_string()),
+        }
+    }
+
     #[test]
     fn classify_branch_ownership_marks_current_creator_as_yours() {
         let ctx = ctx("github:alice");
@@ -917,6 +966,26 @@ mod oauth_session_tests {
     }
 
     #[test]
+    fn resolve_project_allows_non_demo_projects() {
+        let config = ServerConfig {
+            projects: vec![project_config("staging", false)],
+        };
+
+        let project = resolve_project(&config, "staging").unwrap();
+        assert_eq!(project.project_ref, "staging-ref");
+    }
+
+    #[test]
+    fn resolve_project_rejects_unknown_projects() {
+        let config = ServerConfig {
+            projects: vec![project_config("staging", false)],
+        };
+
+        let err = resolve_project(&config, "unknown").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[test]
     fn resolve_demo_project_rejects_non_demo_projects() {
         let config = ServerConfig {
             projects: vec![project_config("staging", false)],
@@ -944,6 +1013,36 @@ mod oauth_session_tests {
 
         let err = resolve_demo_project(&config, "unknown").unwrap_err();
         assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[test]
+    fn validates_created_branch_response_as_child_branch() {
+        let response = created_branch_response("child-ref", "parent-ref", false);
+        assert_eq!(
+            validated_branch_ref(&response, "parent-ref").unwrap(),
+            "child-ref"
+        );
+    }
+
+    #[test]
+    fn rejects_created_branch_response_that_points_at_parent_project() {
+        let response = created_branch_response("parent-ref", "parent-ref", false);
+        let err = validated_branch_ref(&response, "parent-ref").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[test]
+    fn rejects_created_branch_response_with_wrong_parent() {
+        let response = created_branch_response("child-ref", "other-parent-ref", false);
+        let err = validated_branch_ref(&response, "parent-ref").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[test]
+    fn rejects_created_branch_response_for_default_branch() {
+        let response = created_branch_response("child-ref", "parent-ref", true);
+        let err = validated_branch_ref(&response, "parent-ref").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
     }
 
     #[test]
