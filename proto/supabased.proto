@@ -12,6 +12,9 @@ service Supabased {
   rpc ListBranches (ListBranchesRequest) returns (ListBranchesResponse);
   rpc DeleteBranch (DeleteBranchRequest) returns (DeleteBranchResponse);
   rpc GetBranchCredentials (GetBranchCredentialsRequest) returns (BranchCredentials);
+  rpc SaveDemoState (SaveDemoStateRequest) returns (SaveDemoStateResponse);
+  rpc ListDemoStates (ListDemoStatesRequest) returns (ListDemoStatesResponse);
+  rpc RestoreDemoState (RestoreDemoStateRequest) returns (RestoreDemoStateResponse);
 }
 
 message WhoAmIRequest {}
@@ -133,4 +136,39 @@ message BranchCredentials {
   string api_url = 3;
   string anon_key = 4;
   string service_role_key = 5;
+}
+
+// Demo-state operations
+message SaveDemoStateRequest {
+  string project_name = 1;
+  string name = 2;
+}
+message SaveDemoStateResponse {
+  DemoStateInfo state = 1;
+}
+
+message ListDemoStatesRequest {
+  string project_name = 1;
+}
+message ListDemoStatesResponse {
+  repeated DemoStateInfo states = 1;
+}
+
+message RestoreDemoStateRequest {
+  string project_name = 1;
+  string name = 2;
+  bool confirm_overwrite_main = 3;
+}
+message RestoreDemoStateResponse {
+  DemoStateInfo state = 1;
+}
+
+message DemoStateInfo {
+  string project_name = 1;
+  string name = 2;
+  string branch_name = 3;
+  string branch_ref = 4;
+  string creator_identity = 5;
+  string created_at = 6;
+  string last_restored_at = 7;
 }

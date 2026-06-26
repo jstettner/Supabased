@@ -10,12 +10,13 @@ use tonic::{Request, Response, Status};
 
 use supabased_proto::supabased::{
     AuthResponse, BranchCredentials, BranchOwnership, CreateBranchRequest, CreateBranchResponse,
-    DeleteBranchRequest, DeleteBranchResponse, FinishGithubDeviceAuthRequest,
+    DeleteBranchRequest, DeleteBranchResponse, DemoStateInfo, FinishGithubDeviceAuthRequest,
     FinishGithubDeviceAuthResponse, GetBranchCredentialsRequest, GithubDeviceAuthPending,
-    ListBranchesRequest, ListBranchesResponse, ListProjectsRequest, ListProjectsResponse,
-    LogoutRequest, LogoutResponse, RefreshSessionRequest, StartGithubDeviceAuthRequest,
-    StartGithubDeviceAuthResponse, WhoAmIRequest, WhoAmIResponse,
-    finish_github_device_auth_response, supabased_server::Supabased,
+    ListBranchesRequest, ListBranchesResponse, ListDemoStatesRequest, ListDemoStatesResponse,
+    ListProjectsRequest, ListProjectsResponse, LogoutRequest, LogoutResponse,
+    RefreshSessionRequest, RestoreDemoStateRequest, RestoreDemoStateResponse, SaveDemoStateRequest,
+    SaveDemoStateResponse, StartGithubDeviceAuthRequest, StartGithubDeviceAuthResponse,
+    WhoAmIRequest, WhoAmIResponse, finish_github_device_auth_response, supabased_server::Supabased,
 };
 
 use crate::auth::{self, AuthContext, require_permission, require_permission_or_owner};
@@ -23,6 +24,7 @@ use crate::config::ServerConfig;
 use crate::db;
 use crate::github;
 use crate::rate_limit::RateLimiter;
+use crate::restore;
 use crate::supabase;
 use crate::supabase::SupabaseClient;
 
@@ -148,6 +150,50 @@ fn classify_branch_ownership(
         Some(record) if record.creator_identity == ctx.identity => BranchOwnership::Yours,
         Some(_) => BranchOwnership::Other,
         None => BranchOwnership::Untracked,
+    }
+}
+
+fn demo_state_info(record: db::DemoStateRecord) -> DemoStateInfo {
+    DemoStateInfo {
+        project_name: record.project_name,
+        name: record.name,
+        branch_name: record.branch_name,
+        branch_ref: record.branch_ref,
+        creator_identity: record.creator_identity,
+        created_at: record.created_at,
+        last_restored_at: record.last_restored_at.unwrap_or_default(),
+    }
+}
+
+fn sanitized_demo_branch_name(name: &str) -> String {
+    let mut sanitized = String::with_capacity(name.len());
+    let mut last_was_dash = false;
+
+    for c in name.chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_alphanumeric() || matches!(c, '.' | '_') {
+            sanitized.push(c);
+            last_was_dash = false;
+        } else if !last_was_dash {
+            sanitized.push('-');
+            last_was_dash = true;
+        }
+    }
+
+    let sanitized = sanitized.trim_matches('-');
+    if sanitized.is_empty() {
+        "demo/state".to_string()
+    } else {
+        format!("demo/{}", sanitized.chars().take(80).collect::<String>())
+    }
+}
+
+fn require_restore_confirmation(confirm_overwrite_main: bool) -> Result<(), Status> {
+    if confirm_overwrite_main {
+        Ok(())
+    } else {
+        Err(Status::failed_precondition(
+            "restore requires confirm_overwrite_main=true",
+        ))
     }
 }
 
@@ -606,6 +652,155 @@ impl Supabased for SupabasedService {
             service_role_key: creds.service_role_key,
         })))
     }
+
+    async fn save_demo_state(
+        &self,
+        request: Request<SaveDemoStateRequest>,
+    ) -> Result<Response<SaveDemoStateResponse>, Status> {
+        let ctx = request
+            .extensions()
+            .get::<AuthContext>()
+            .ok_or_else(|| Status::unauthenticated("authentication required"))?
+            .clone();
+
+        require_permission(&ctx, "demo.save")?;
+
+        let req = request.into_inner();
+        if req.name.trim().is_empty() {
+            return Err(Status::invalid_argument("demo state name required"));
+        }
+        let project = self
+            .config
+            .resolve_project(&req.project_name)
+            .ok_or_else(|| Status::not_found(format!("unknown project: {}", req.project_name)))?;
+
+        if db::get_demo_state(&self.db, &req.project_name, &req.name)
+            .await
+            .map_err(|e| Status::internal(format!("database error: {e}")))?
+            .is_some()
+        {
+            return Err(Status::already_exists(format!(
+                "demo state '{}' already exists in project '{}'",
+                req.name, req.project_name
+            )));
+        }
+
+        let branch_name = sanitized_demo_branch_name(&req.name);
+        let branch_resp = self
+            .supabase_client
+            .create_branch(&project.project_ref, &branch_name)
+            .await?;
+        let branch_ref = branch_resp
+            .project_ref
+            .as_deref()
+            .unwrap_or(&branch_resp.id)
+            .to_string();
+
+        db::record_demo_state(
+            &self.db,
+            &req.project_name,
+            &req.name,
+            &branch_name,
+            &branch_ref,
+            &ctx.identity,
+        )
+        .await
+        .map_err(|e| Status::internal(format!("failed to record demo state: {e}")))?;
+
+        let record = db::get_demo_state(&self.db, &req.project_name, &req.name)
+            .await
+            .map_err(|e| Status::internal(format!("database error: {e}")))?
+            .ok_or_else(|| Status::internal("saved demo state record was not found"))?;
+
+        Ok(
+            self.with_config_version(Response::new(SaveDemoStateResponse {
+                state: Some(demo_state_info(record)),
+            })),
+        )
+    }
+
+    async fn list_demo_states(
+        &self,
+        request: Request<ListDemoStatesRequest>,
+    ) -> Result<Response<ListDemoStatesResponse>, Status> {
+        let ctx = request
+            .extensions()
+            .get::<AuthContext>()
+            .ok_or_else(|| Status::unauthenticated("authentication required"))?
+            .clone();
+
+        require_permission(&ctx, "demo.list")?;
+
+        let req = request.into_inner();
+        self.config
+            .resolve_project(&req.project_name)
+            .ok_or_else(|| Status::not_found(format!("unknown project: {}", req.project_name)))?;
+
+        let states = db::list_demo_states_by_project(&self.db, &req.project_name)
+            .await
+            .map_err(|e| Status::internal(format!("database error: {e}")))?
+            .into_iter()
+            .map(demo_state_info)
+            .collect();
+
+        Ok(self.with_config_version(Response::new(ListDemoStatesResponse { states })))
+    }
+
+    async fn restore_demo_state(
+        &self,
+        request: Request<RestoreDemoStateRequest>,
+    ) -> Result<Response<RestoreDemoStateResponse>, Status> {
+        let ctx = request
+            .extensions()
+            .get::<AuthContext>()
+            .ok_or_else(|| Status::unauthenticated("authentication required"))?
+            .clone();
+
+        let req = request.into_inner();
+        require_restore_confirmation(req.confirm_overwrite_main)?;
+
+        require_permission(&ctx, "demo.restore_main")?;
+
+        let project = self
+            .config
+            .resolve_project(&req.project_name)
+            .ok_or_else(|| Status::not_found(format!("unknown project: {}", req.project_name)))?;
+        let record = db::get_demo_state(&self.db, &req.project_name, &req.name)
+            .await
+            .map_err(|e| Status::internal(format!("database error: {e}")))?
+            .ok_or_else(|| {
+                Status::not_found(format!(
+                    "demo state '{}' not found in project '{}'",
+                    req.name, req.project_name
+                ))
+            })?;
+
+        let source_connection = self
+            .config
+            .database_connection_for_project_ref(&record.branch_ref)
+            .map_err(Status::failed_precondition)?;
+        let target_connection = self
+            .config
+            .database_connection_for_project_ref(&project.project_ref)
+            .map_err(Status::failed_precondition)?;
+
+        tokio::task::spawn_blocking(move || {
+            restore::restore_public_schema(&source_connection, &target_connection)
+        })
+        .await
+        .map_err(|e| Status::internal(format!("restore task failed: {e}")))??;
+
+        let updated = db::mark_demo_state_restored(&self.db, &req.project_name, &req.name)
+            .await
+            .map_err(|e| Status::internal(format!("database error: {e}")))?
+            .ok_or_else(|| Status::internal("restored demo state record was not found"))?;
+
+        Ok(
+            self.with_config_version(Response::new(RestoreDemoStateResponse {
+                state: Some(demo_state_info(updated)),
+            })),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -687,6 +882,39 @@ mod oauth_session_tests {
         assert_eq!(parsed_selector, selector);
         assert_eq!(token_hash, hash_refresh_secret(parsed_secret));
         assert_ne!(selector, parsed_secret);
+    }
+
+    #[test]
+    fn demo_branch_name_is_sanitized() {
+        assert_eq!(
+            sanitized_demo_branch_name("Sales Demo 2026!"),
+            "demo/sales-demo-2026"
+        );
+        assert_eq!(sanitized_demo_branch_name("___"), "demo/___");
+        assert_eq!(sanitized_demo_branch_name("!!!"), "demo/state");
+    }
+
+    #[test]
+    fn restore_confirmation_is_required() {
+        let err = require_restore_confirmation(false).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(require_restore_confirmation(true).is_ok());
+    }
+
+    #[test]
+    fn restore_permission_uses_elevated_demo_permission() {
+        let ctx = AuthContext {
+            identity: "github:alice".to_string(),
+            permissions: vec!["demo.restore_main".to_string()],
+        };
+        assert!(require_permission(&ctx, "demo.restore_main").is_ok());
+
+        let ctx = AuthContext {
+            identity: "github:alice".to_string(),
+            permissions: vec!["demo.save".to_string()],
+        };
+        let err = require_permission(&ctx, "demo.restore_main").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
     }
 
     #[test]
