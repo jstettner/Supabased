@@ -61,6 +61,12 @@ pub struct BranchCredentialSet {
     pub service_role_key: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeleteBranchOutcome {
+    Deleted,
+    Missing,
+}
+
 impl SupabaseClient {
     pub fn new(token: String) -> Self {
         Self { token }
@@ -145,7 +151,7 @@ impl SupabaseClient {
     /// Delete a single branch.
     /// `DELETE /v1/branches/{branch_ref}`
     /// NOTE: This is NOT `/v1/projects/{ref}/branches` which disables branching entirely.
-    pub async fn delete_branch(&self, branch_ref: &str) -> Result<(), Status> {
+    pub async fn delete_branch(&self, branch_ref: &str) -> Result<DeleteBranchOutcome, Status> {
         let client = Self::http_client()?;
         let url = format!("{BASE_URL}/v1/branches/{branch_ref}");
 
@@ -157,6 +163,10 @@ impl SupabaseClient {
             .await
             .map_err(|e| Status::unavailable(format!("Supabase API request failed: {e}")))?;
 
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(DeleteBranchOutcome::Missing);
+        }
+
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
@@ -165,7 +175,7 @@ impl SupabaseClient {
             )));
         }
 
-        Ok(())
+        Ok(DeleteBranchOutcome::Deleted)
     }
 
     /// Get API keys for a branch (each branch is its own project).
