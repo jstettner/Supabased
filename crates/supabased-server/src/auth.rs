@@ -20,6 +20,7 @@ pub const DEFAULT_PERMISSIONS: &[&str] = &[
     "branches.get_credentials_own",
     "demo.save",
     "demo.list",
+    "demo.delete_own",
     "info.read",
 ];
 

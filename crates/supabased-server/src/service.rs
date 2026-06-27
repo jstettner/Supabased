@@ -10,13 +10,14 @@ use tonic::{Request, Response, Status};
 
 use supabased_proto::supabased::{
     AuthResponse, BranchCredentials, BranchOwnership, CreateBranchRequest, CreateBranchResponse,
-    DeleteBranchRequest, DeleteBranchResponse, DemoStateInfo, FinishGithubDeviceAuthRequest,
-    FinishGithubDeviceAuthResponse, GetBranchCredentialsRequest, GithubDeviceAuthPending,
-    ListBranchesRequest, ListBranchesResponse, ListDemoStatesRequest, ListDemoStatesResponse,
-    ListProjectsRequest, ListProjectsResponse, LogoutRequest, LogoutResponse,
-    RefreshSessionRequest, RestoreDemoStateRequest, RestoreDemoStateResponse, SaveDemoStateRequest,
-    SaveDemoStateResponse, StartGithubDeviceAuthRequest, StartGithubDeviceAuthResponse,
-    WhoAmIRequest, WhoAmIResponse, finish_github_device_auth_response, supabased_server::Supabased,
+    DeleteBranchRequest, DeleteBranchResponse, DeleteDemoStateRequest, DeleteDemoStateResponse,
+    DemoStateInfo, FinishGithubDeviceAuthRequest, FinishGithubDeviceAuthResponse,
+    GetBranchCredentialsRequest, GithubDeviceAuthPending, ListBranchesRequest,
+    ListBranchesResponse, ListDemoStatesRequest, ListDemoStatesResponse, ListProjectsRequest,
+    ListProjectsResponse, LogoutRequest, LogoutResponse, RefreshSessionRequest,
+    RestoreDemoStateRequest, RestoreDemoStateResponse, SaveDemoStateRequest, SaveDemoStateResponse,
+    StartGithubDeviceAuthRequest, StartGithubDeviceAuthResponse, WhoAmIRequest, WhoAmIResponse,
+    finish_github_device_auth_response, supabased_server::Supabased,
 };
 
 use crate::auth::{self, AuthContext, require_permission, require_permission_or_owner};
@@ -26,6 +27,7 @@ use crate::github;
 use crate::rate_limit::RateLimiter;
 use crate::restore;
 use crate::supabase;
+use crate::supabase::DeleteBranchOutcome;
 use crate::supabase::SupabaseClient;
 
 const REFRESH_TOKEN_TTL_SECONDS: i64 = 30 * 24 * 3600;
@@ -642,9 +644,16 @@ impl Supabased for SupabasedService {
         )?;
 
         // Delete from Supabase
-        self.supabase_client
+        let outcome = self
+            .supabase_client
             .delete_branch(&record.branch_ref)
             .await?;
+        if outcome == DeleteBranchOutcome::Missing {
+            return Err(Status::not_found(format!(
+                "Supabase branch '{}' was not found",
+                record.branch_ref
+            )));
+        }
 
         // Remove from SQLite
         db::delete_branch(&self.db, &req.branch_name, &req.project_name)
@@ -786,6 +795,57 @@ impl Supabased for SupabasedService {
             .collect();
 
         Ok(self.with_config_version(Response::new(ListDemoStatesResponse { states })))
+    }
+
+    async fn delete_demo_state(
+        &self,
+        request: Request<DeleteDemoStateRequest>,
+    ) -> Result<Response<DeleteDemoStateResponse>, Status> {
+        let ctx = request
+            .extensions()
+            .get::<AuthContext>()
+            .ok_or_else(|| Status::unauthenticated("authentication required"))?
+            .clone();
+
+        let req = request.into_inner();
+        resolve_demo_project(&self.config, &req.project_name)?;
+
+        let record = db::get_demo_state(&self.db, &req.project_name, &req.name)
+            .await
+            .map_err(|e| Status::internal(format!("database error: {e}")))?
+            .ok_or_else(|| {
+                Status::not_found(format!(
+                    "demo state '{}' not found in project '{}'",
+                    req.name, req.project_name
+                ))
+            })?;
+
+        require_permission_or_owner(
+            &ctx,
+            "demo.delete_own",
+            "demo.delete_any",
+            &record.creator_identity,
+        )?;
+
+        let outcome = self
+            .supabase_client
+            .delete_branch(&record.branch_ref)
+            .await?;
+        db::delete_demo_state(&self.db, &req.project_name, &req.name)
+            .await
+            .map_err(|e| Status::internal(format!("database error: {e}")))?;
+
+        Ok(
+            self.with_config_version(Response::new(DeleteDemoStateResponse {
+                deleted: true,
+                project_name: record.project_name,
+                name: record.name,
+                branch_name: record.branch_name,
+                branch_ref: record.branch_ref,
+                remote_branch_deleted: outcome == DeleteBranchOutcome::Deleted,
+                remote_branch_missing: outcome == DeleteBranchOutcome::Missing,
+            })),
+        )
     }
 
     async fn restore_demo_state(

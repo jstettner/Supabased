@@ -14,6 +14,7 @@ service Supabased {
   rpc GetBranchCredentials (GetBranchCredentialsRequest) returns (BranchCredentials);
   rpc SaveDemoState (SaveDemoStateRequest) returns (SaveDemoStateResponse);
   rpc ListDemoStates (ListDemoStatesRequest) returns (ListDemoStatesResponse);
+  rpc DeleteDemoState (DeleteDemoStateRequest) returns (DeleteDemoStateResponse);
   rpc RestoreDemoState (RestoreDemoStateRequest) returns (RestoreDemoStateResponse);
 }
 
@@ -152,6 +153,20 @@ message ListDemoStatesRequest {
 }
 message ListDemoStatesResponse {
   repeated DemoStateInfo states = 1;
+}
+
+message DeleteDemoStateRequest {
+  string project_name = 1;
+  string name = 2;
+}
+message DeleteDemoStateResponse {
+  bool deleted = 1;
+  string project_name = 2;
+  string name = 3;
+  string branch_name = 4;
+  string branch_ref = 5;
+  bool remote_branch_deleted = 6;
+  bool remote_branch_missing = 7;
 }
 
 message RestoreDemoStateRequest {

@@ -325,6 +325,23 @@ pub async fn list_demo_states_by_project(
     .await
 }
 
+pub async fn delete_demo_state(
+    conn: &Connection,
+    project_name: &str,
+    name: &str,
+) -> Result<bool, TokioRusqliteError> {
+    let project_name = project_name.to_string();
+    let name = name.to_string();
+    conn.call(move |conn| -> Result<bool, rusqlite::Error> {
+        let rows = conn.execute(
+            "DELETE FROM demo_states WHERE project_name = ?1 AND name = ?2",
+            rusqlite::params![project_name, name],
+        )?;
+        Ok(rows > 0)
+    })
+    .await
+}
+
 pub async fn mark_demo_state_restored(
     conn: &Connection,
     project_name: &str,
@@ -664,6 +681,40 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_demo_state_removes_row() {
+        let conn = test_conn().await;
+        record_demo_state(
+            &conn,
+            "staging",
+            "happy path",
+            "demo/happy-path",
+            "branch-ref",
+            "github:alice",
+        )
+        .await
+        .unwrap();
+
+        let deleted = delete_demo_state(&conn, "staging", "happy path")
+            .await
+            .unwrap();
+        assert!(deleted);
+
+        let result = get_demo_state(&conn, "staging", "happy path")
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_demo_state_returns_false_for_unknown() {
+        let conn = test_conn().await;
+        let deleted = delete_demo_state(&conn, "staging", "missing")
+            .await
+            .unwrap();
+        assert!(!deleted);
     }
 
     #[tokio::test]
