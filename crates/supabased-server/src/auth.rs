@@ -21,6 +21,7 @@ pub const DEFAULT_PERMISSIONS: &[&str] = &[
     "demo.save",
     "demo.list",
     "demo.delete_own",
+    "demo.restore_main",
     "info.read",
 ];
 
@@ -163,6 +164,11 @@ mod tests {
         let c = ctx("github:alice", &["branches.list"]);
         let err = require_permission(&c, "branches.create").unwrap_err();
         assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[test]
+    fn default_permissions_include_demo_restore_main() {
+        assert!(DEFAULT_PERMISSIONS.contains(&"demo.restore_main"));
     }
 
     #[test]
