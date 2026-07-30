@@ -14,6 +14,10 @@ fn create_branch_body(branch_name: &str) -> Value {
     })
 }
 
+fn api_keys_url(branch_ref: &str) -> String {
+    format!("{BASE_URL}/v1/projects/{branch_ref}/api-keys?reveal=true")
+}
+
 pub struct SupabaseClient {
     token: String,
 }
@@ -44,7 +48,6 @@ pub struct BranchResponse {
 }
 
 /// API key response from `GET /v1/projects/{ref}/api-keys`.
-/// Handles both legacy (`name` field) and new opaque (`type` field) key formats.
 #[derive(Debug, Deserialize)]
 pub struct ApiKeyResponse {
     pub api_key: String,
@@ -57,8 +60,8 @@ pub struct ApiKeyResponse {
 /// Extracted credential set ready for proto conversion.
 pub struct BranchCredentialSet {
     pub api_url: String,
-    pub anon_key: String,
-    pub service_role_key: String,
+    pub publishable_key: String,
+    pub secret_key: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -182,7 +185,7 @@ impl SupabaseClient {
     /// `GET /v1/projects/{branch_ref}/api-keys`
     pub async fn get_api_keys(&self, branch_ref: &str) -> Result<Vec<ApiKeyResponse>, Status> {
         let client = Self::http_client()?;
-        let url = format!("{BASE_URL}/v1/projects/{branch_ref}/api-keys");
+        let url = api_keys_url(branch_ref);
 
         let response = client
             .get(&url)
@@ -207,29 +210,73 @@ impl SupabaseClient {
     }
 }
 
-/// Extract anon and service_role keys from the API keys response.
-/// Handles both legacy keys (matched by `name` field: "anon" / "service_role")
-/// and new opaque keys (matched by `type` field: "publishable" / "secret").
+fn select_modern_key<'a>(
+    keys: &'a [ApiKeyResponse],
+    key_type: &str,
+    expected_prefix: &str,
+) -> Result<&'a str, Status> {
+    let candidates: Vec<_> = keys
+        .iter()
+        .filter(|key| key.key_type.as_deref() == Some(key_type))
+        .collect();
+
+    let selected = match candidates.as_slice() {
+        [] => {
+            return Err(Status::internal(format!(
+                "no modern {key_type} API key found; create one in the Supabase API Keys settings"
+            )));
+        }
+        [only] => *only,
+        many => {
+            let defaults: Vec<_> = many
+                .iter()
+                .filter(|key| key.name.as_deref() == Some("default"))
+                .collect();
+            match defaults.as_slice() {
+                [default] => **default,
+                _ => {
+                    return Err(Status::internal(format!(
+                        "multiple {key_type} API keys found without a unique key named 'default'"
+                    )));
+                }
+            }
+        }
+    };
+
+    if !selected.api_key.starts_with(expected_prefix) {
+        return Err(Status::internal(format!(
+            "selected {key_type} API key does not have the expected {expected_prefix} prefix"
+        )));
+    }
+
+    let suffix = &selected.api_key[expected_prefix.len()..];
+    if suffix.is_empty()
+        || suffix.contains('*')
+        || suffix.contains("...")
+        || suffix.contains('…')
+        || suffix.contains('•')
+    {
+        return Err(Status::internal(format!(
+            "selected {key_type} API key is masked or incomplete; ensure the Management API response reveals key values"
+        )));
+    }
+
+    Ok(&selected.api_key)
+}
+
+/// Extract modern publishable and secret keys from the API keys response.
+/// Legacy JWT-based `anon` and `service_role` entries are deliberately ignored.
 pub fn extract_credentials(
     keys: &[ApiKeyResponse],
     branch_ref: &str,
 ) -> Result<BranchCredentialSet, Status> {
-    let anon_key = keys
-        .iter()
-        .find(|k| k.name.as_deref() == Some("anon") || k.key_type.as_deref() == Some("publishable"))
-        .ok_or_else(|| Status::internal("no anon/publishable key found in API keys response"))?;
-
-    let service_role_key = keys
-        .iter()
-        .find(|k| {
-            k.name.as_deref() == Some("service_role") || k.key_type.as_deref() == Some("secret")
-        })
-        .ok_or_else(|| Status::internal("no service_role/secret key found in API keys response"))?;
+    let publishable_key = select_modern_key(keys, "publishable", "sb_publishable_")?;
+    let secret_key = select_modern_key(keys, "secret", "sb_secret_")?;
 
     Ok(BranchCredentialSet {
         api_url: format!("https://{branch_ref}.supabase.co"),
-        anon_key: anon_key.api_key.clone(),
-        service_role_key: service_role_key.api_key.clone(),
+        publishable_key: publishable_key.to_owned(),
+        secret_key: secret_key.to_owned(),
     })
 }
 
@@ -247,79 +294,163 @@ mod tests {
         assert!(body.get("git_branch").is_none());
     }
 
+    #[test]
+    fn api_keys_url_requests_revealed_values() {
+        assert_eq!(
+            api_keys_url("branch-ref"),
+            "https://api.supabase.com/v1/projects/branch-ref/api-keys?reveal=true"
+        );
+    }
+
+    fn key(api_key: &str, name: Option<&str>, key_type: Option<&str>) -> ApiKeyResponse {
+        ApiKeyResponse {
+            api_key: api_key.into(),
+            name: name.map(str::to_owned),
+            key_type: key_type.map(str::to_owned),
+        }
+    }
+
     fn make_legacy_keys() -> Vec<ApiKeyResponse> {
         vec![
-            ApiKeyResponse {
-                api_key: "anon-key-value".into(),
-                name: Some("anon".into()),
-                key_type: None,
-            },
-            ApiKeyResponse {
-                api_key: "service-role-key-value".into(),
-                name: Some("service_role".into()),
-                key_type: None,
-            },
+            key("legacy-anon", Some("anon"), Some("legacy")),
+            key("legacy-service-role", Some("service_role"), Some("legacy")),
         ]
     }
 
-    fn make_opaque_keys() -> Vec<ApiKeyResponse> {
+    fn make_modern_keys() -> Vec<ApiKeyResponse> {
         vec![
-            ApiKeyResponse {
-                api_key: "publishable-key-value".into(),
-                name: None,
-                key_type: Some("publishable".into()),
-            },
-            ApiKeyResponse {
-                api_key: "secret-key-value".into(),
-                name: None,
-                key_type: Some("secret".into()),
-            },
+            key(
+                "sb_publishable_publishable-key-value",
+                Some("default"),
+                Some("publishable"),
+            ),
+            key(
+                "sb_secret_secret-key-value",
+                Some("default"),
+                Some("secret"),
+            ),
         ]
     }
 
     #[test]
-    fn extract_credentials_legacy_keys() {
+    fn extract_credentials_rejects_legacy_only_keys() {
         let keys = make_legacy_keys();
-        let creds = extract_credentials(&keys, "branch-ref-abc").unwrap();
-        assert_eq!(creds.api_url, "https://branch-ref-abc.supabase.co");
-        assert_eq!(creds.anon_key, "anon-key-value");
-        assert_eq!(creds.service_role_key, "service-role-key-value");
+        let error = extract_credentials(&keys, "branch-ref-abc")
+            .err()
+            .expect("legacy keys should be rejected");
+        assert!(error.message().contains("no modern publishable API key"));
     }
 
     #[test]
-    fn extract_credentials_opaque_keys() {
-        let keys = make_opaque_keys();
+    fn extract_credentials_modern_keys() {
+        let keys = make_modern_keys();
         let creds = extract_credentials(&keys, "branch-ref-xyz").unwrap();
         assert_eq!(creds.api_url, "https://branch-ref-xyz.supabase.co");
-        assert_eq!(creds.anon_key, "publishable-key-value");
-        assert_eq!(creds.service_role_key, "secret-key-value");
+        assert_eq!(
+            creds.publishable_key,
+            "sb_publishable_publishable-key-value"
+        );
+        assert_eq!(creds.secret_key, "sb_secret_secret-key-value");
     }
 
     #[test]
-    fn extract_credentials_missing_anon_key() {
-        let keys = vec![ApiKeyResponse {
-            api_key: "service-role-key-value".into(),
-            name: Some("service_role".into()),
-            key_type: None,
-        }];
-        let result = extract_credentials(&keys, "ref");
-        assert!(result.is_err());
+    fn extract_credentials_ignores_legacy_keys_that_come_first() {
+        let mut keys = make_legacy_keys();
+        keys.extend(make_modern_keys());
+        let creds = extract_credentials(&keys, "ref").unwrap();
+        assert!(creds.publishable_key.starts_with("sb_publishable_"));
+        assert!(creds.secret_key.starts_with("sb_secret_"));
     }
 
     #[test]
-    fn extract_credentials_missing_service_role_key() {
-        let keys = vec![ApiKeyResponse {
-            api_key: "anon-key-value".into(),
-            name: Some("anon".into()),
-            key_type: None,
-        }];
-        let result = extract_credentials(&keys, "ref");
-        assert!(result.is_err());
+    fn extract_credentials_requires_both_modern_key_types() {
+        let only_publishable = vec![key(
+            "sb_publishable_value",
+            Some("default"),
+            Some("publishable"),
+        )];
+        let error = extract_credentials(&only_publishable, "ref")
+            .err()
+            .expect("a secret key should be required");
+        assert!(error.message().contains("no modern secret API key"));
     }
 
     #[test]
     fn extract_credentials_empty_keys() {
-        let result = extract_credentials(&[], "ref");
-        assert!(result.is_err());
+        let error = extract_credentials(&[], "ref")
+            .err()
+            .expect("an empty key list should be rejected");
+        assert!(error.message().contains("no modern publishable API key"));
+    }
+
+    #[test]
+    fn extract_credentials_prefers_default_among_multiple_candidates() {
+        let keys = vec![
+            key("sb_publishable_other", Some("other"), Some("publishable")),
+            key(
+                "sb_publishable_default",
+                Some("default"),
+                Some("publishable"),
+            ),
+            key("sb_secret_other", Some("other"), Some("secret")),
+            key("sb_secret_default", Some("default"), Some("secret")),
+        ];
+        let creds = extract_credentials(&keys, "ref").unwrap();
+        assert_eq!(creds.publishable_key, "sb_publishable_default");
+        assert_eq!(creds.secret_key, "sb_secret_default");
+    }
+
+    #[test]
+    fn extract_credentials_accepts_sole_non_default_candidates() {
+        let keys = vec![
+            key("sb_publishable_custom", Some("custom"), Some("publishable")),
+            key("sb_secret_custom", Some("custom"), Some("secret")),
+        ];
+        let creds = extract_credentials(&keys, "ref").unwrap();
+        assert_eq!(creds.publishable_key, "sb_publishable_custom");
+        assert_eq!(creds.secret_key, "sb_secret_custom");
+    }
+
+    #[test]
+    fn extract_credentials_rejects_ambiguous_candidates() {
+        let mut keys = make_modern_keys();
+        keys[0].name = Some("one".into());
+        keys.push(key("sb_publishable_two", Some("two"), Some("publishable")));
+        let error = extract_credentials(&keys, "ref")
+            .err()
+            .expect("ambiguous keys should be rejected");
+        assert!(
+            error
+                .message()
+                .contains("without a unique key named 'default'")
+        );
+    }
+
+    #[test]
+    fn extract_credentials_rejects_malformed_values_without_leaking_them() {
+        let malformed = "wrong_publishable_sensitive-value";
+        let keys = vec![
+            key(malformed, Some("default"), Some("publishable")),
+            key("sb_secret_valid", Some("default"), Some("secret")),
+        ];
+        let error = extract_credentials(&keys, "ref")
+            .err()
+            .expect("malformed keys should be rejected");
+        assert!(error.message().contains("expected sb_publishable_ prefix"));
+        assert!(!error.message().contains(malformed));
+    }
+
+    #[test]
+    fn extract_credentials_rejects_masked_values_without_leaking_them() {
+        let masked = "sb_secret_********";
+        let keys = vec![
+            key("sb_publishable_valid", Some("default"), Some("publishable")),
+            key(masked, Some("default"), Some("secret")),
+        ];
+        let error = extract_credentials(&keys, "ref")
+            .err()
+            .expect("masked keys should be rejected");
+        assert!(error.message().contains("masked or incomplete"));
+        assert!(!error.message().contains(masked));
     }
 }

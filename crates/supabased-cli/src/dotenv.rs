@@ -9,11 +9,11 @@ pub fn format_supabase_block(
     project_name: &str,
     branch_name: &str,
     url: &str,
-    key: &str,
+    publishable_key: &str,
     secret_key: &str,
 ) -> String {
     format!(
-        "{BLOCK_START} - {project_name}/{branch_name}\nSUPABASE_URL={url}\nSUPABASE_KEY={key}\nSUPABASE_SECRET_KEY={secret_key}"
+        "{BLOCK_START} - {project_name}/{branch_name}\nSUPABASE_URL={url}\nSUPABASE_PUBLISHABLE_KEY={publishable_key}\nSUPABASE_KEY={publishable_key}\nSUPABASE_SECRET_KEY={secret_key}"
     )
 }
 
@@ -73,12 +73,13 @@ mod tests {
             "staging",
             "my-branch",
             "https://ref-abc.supabase.co",
-            "anon-key",
+            "sb_publishable_value",
             "secret-key",
         );
         assert!(block.starts_with("# Supabase Configuration - staging/my-branch"));
         assert!(block.contains("SUPABASE_URL=https://ref-abc.supabase.co"));
-        assert!(block.contains("SUPABASE_KEY=anon-key"));
+        assert!(block.contains("SUPABASE_PUBLISHABLE_KEY=sb_publishable_value"));
+        assert!(block.contains("SUPABASE_KEY=sb_publishable_value"));
         assert!(block.contains("SUPABASE_SECRET_KEY=secret-key"));
     }
 
@@ -115,6 +116,8 @@ mod tests {
         update_dotenv(&path, &block).unwrap();
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("SUPABASE_URL=new-url"));
+        assert!(contents.contains("SUPABASE_PUBLISHABLE_KEY=new-key"));
+        assert!(contents.contains("SUPABASE_KEY=new-key"));
         assert!(!contents.contains("SUPABASE_URL=old"));
         assert!(contents.contains("OTHER=1"));
         assert!(contents.contains("ANOTHER=2"));
