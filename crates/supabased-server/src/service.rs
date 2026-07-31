@@ -137,6 +137,26 @@ fn random_hex(len: usize) -> String {
         .collect()
 }
 
+#[allow(deprecated)]
+fn branch_credentials_response(
+    project_name: String,
+    branch_name: String,
+    creds: supabase::BranchCredentialSet,
+) -> BranchCredentials {
+    let publishable_key = creds.publishable_key;
+    let secret_key = creds.secret_key;
+
+    BranchCredentials {
+        branch_name,
+        project_name,
+        api_url: creds.api_url,
+        anon_key: publishable_key.clone(),
+        service_role_key: secret_key.clone(),
+        publishable_key,
+        secret_key,
+    }
+}
+
 fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -700,14 +720,9 @@ impl Supabased for SupabasedService {
             .await?;
 
         let creds = supabase::extract_credentials(&keys, &record.branch_ref)?;
+        let response = branch_credentials_response(req.project_name, req.branch_name, creds);
 
-        Ok(self.with_config_version(Response::new(BranchCredentials {
-            branch_name: req.branch_name,
-            project_name: req.project_name,
-            api_url: creds.api_url,
-            anon_key: creds.anon_key,
-            service_role_key: creds.service_role_key,
-        })))
+        Ok(self.with_config_version(Response::new(response)))
     }
 
     async fn save_demo_state(
@@ -987,6 +1002,25 @@ mod oauth_session_tests {
         assert_eq!(first.len(), 64);
         assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(first, second);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn branch_credentials_populate_modern_and_compatibility_fields() {
+        let response = branch_credentials_response(
+            "staging".into(),
+            "feature".into(),
+            supabase::BranchCredentialSet {
+                api_url: "https://branch-ref.supabase.co".into(),
+                publishable_key: "sb_publishable_value".into(),
+                secret_key: "sb_secret_value".into(),
+            },
+        );
+
+        assert_eq!(response.publishable_key, "sb_publishable_value");
+        assert_eq!(response.anon_key, response.publishable_key);
+        assert_eq!(response.secret_key, "sb_secret_value");
+        assert_eq!(response.service_role_key, response.secret_key);
     }
 
     #[test]

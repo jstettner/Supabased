@@ -135,8 +135,12 @@ message BranchCredentials {
   string branch_name = 1;
   string project_name = 2;
   string api_url = 3;
-  string anon_key = 4;
-  string service_role_key = 5;
+  // Deprecated compatibility aliases. These contain the modern publishable and
+  // secret keys; the server never returns legacy JWT-based keys.
+  string anon_key = 4 [deprecated = true];
+  string service_role_key = 5 [deprecated = true];
+  string publishable_key = 6;
+  string secret_key = 7;
 }
 
 // Demo-state operations

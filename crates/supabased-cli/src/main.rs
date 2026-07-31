@@ -198,6 +198,17 @@ fn demo_delete_success_message(response: &DeleteDemoStateResponse) -> String {
     }
 }
 
+fn branch_credentials_terminal_output(
+    project_name: &str,
+    branch_name: &str,
+    api_url: &str,
+    publishable_key: &str,
+) -> String {
+    format!(
+        "Branch: {project_name}/{branch_name}\n  SUPABASE_URL={api_url}\n  SUPABASE_PUBLISHABLE_KEY={publishable_key}"
+    )
+}
+
 async fn refresh_cli_session(
     client: &mut SupabasedClient<tonic::transport::Channel>,
     sess: &mut session::Session,
@@ -540,21 +551,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let creds = response.into_inner();
             refresh_project_cache(&mut client, &sess.session_token, version).await;
 
-            println!("Branch: {}/{}", creds.project_name, creds.branch_name);
-            println!("  SUPABASE_URL={}", creds.api_url);
-            println!("  SUPABASE_KEY={}", creds.anon_key);
+            println!(
+                "{}",
+                branch_credentials_terminal_output(
+                    &creds.project_name,
+                    &creds.branch_name,
+                    &creds.api_url,
+                    &creds.publishable_key,
+                )
+            );
 
             let block = dotenv::format_supabase_block(
                 &creds.project_name,
                 &creds.branch_name,
                 &creds.api_url,
-                &creds.anon_key,
-                &creds.service_role_key,
+                &creds.publishable_key,
+                &creds.secret_key,
             );
             let dotenv_path = std::env::current_dir()?.join(".env");
             dotenv::update_dotenv(&dotenv_path, &block)?;
             println!(
-                "\nWrote Supabase credentials, including the service-role key, to {}",
+                "\nWrote Supabase credentials, including the secret key, to {}",
                 dotenv_path.display()
             );
         }
@@ -703,6 +720,23 @@ mod tests {
         let err = require_cli_restore_confirmation(false).unwrap_err();
         assert!(err.contains("--confirm-overwrite-main"));
         assert!(require_cli_restore_confirmation(true).is_ok());
+    }
+
+    #[test]
+    fn branch_credentials_terminal_output_omits_secret_key() {
+        let output = branch_credentials_terminal_output(
+            "staging",
+            "feature",
+            "https://branch-ref.supabase.co",
+            "sb_publishable_value",
+        );
+
+        assert_eq!(
+            output,
+            "Branch: staging/feature\n  SUPABASE_URL=https://branch-ref.supabase.co\n  SUPABASE_PUBLISHABLE_KEY=sb_publishable_value"
+        );
+        assert!(!output.contains("SUPABASE_SECRET_KEY"));
+        assert!(!output.contains("sb_secret_"));
     }
 
     #[test]
