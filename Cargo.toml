@@ -11,7 +11,7 @@ supabased-proto = { path = "crates/supabased-proto" }
 tonic = "0.14"
 tonic-prost = "0.14"
 prost = "0.14"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 clap = { version = "4.6.0", features = ["derive"] }
 tonic-prost-build = "0.14"
 protoc-bin-vendored = "3"

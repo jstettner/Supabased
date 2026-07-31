@@ -67,3 +67,34 @@ supabased --server https://your-host.your-tailnet.ts.net:50051 login
 ```
 
 The CLI defaults to local development at `http://[::1]:50051` until a server URL is saved by `supabased login` or supplied with `--server`. Plaintext binds are allowed only on loopback; any non-loopback `BIND_ADDR` requires `TLS_CERT` and `TLS_KEY`.
+
+## Branch auth hooks
+
+Supabased can register a custom access token hook on every branch it creates for
+a project:
+
+```toml
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+custom_access_token_hook_uri = "pg-functions://postgres/public/custom_access_token_hook"
+# Optional; defaults to 15 minutes.
+branch_auth_configure_timeout_seconds = 900
+```
+
+The branch create operation waits for the new project's Auth configuration to
+become available, enables the hook, and only then records the branch as
+successfully created. If configuration fails, Supabased attempts to delete the
+new branch.
+
+Keep the hook function and its permissions in database migrations so they are
+present in each branch. For a Postgres hook, Supabase Auth needs schema usage
+and function execution permission:
+
+```sql
+grant usage on schema public to supabase_auth_admin;
+grant execute on function public.custom_access_token_hook(jsonb)
+  to supabase_auth_admin;
+revoke execute on function public.custom_access_token_hook(jsonb)
+  from authenticated, anon, public;
+```
