@@ -83,6 +83,46 @@ impl SupabasedService {
         response
     }
 
+    async fn configure_branch_auth(
+        &self,
+        project: &ProjectConfig,
+        branch_ref: &str,
+    ) -> Result<(), Status> {
+        let Some(uri) = project.custom_access_token_hook_uri.as_deref() else {
+            return Ok(());
+        };
+
+        let result = self
+            .supabase_client
+            .configure_custom_access_token_hook(
+                branch_ref,
+                uri,
+                Duration::from_secs(project.branch_auth_configure_timeout_seconds),
+            )
+            .await;
+        if let Err(config_error) = result {
+            return match self.supabase_client.delete_branch(branch_ref).await {
+                Ok(_) => Err(Status::new(
+                    config_error.code(),
+                    format!(
+                        "{}; the newly created branch was deleted",
+                        config_error.message()
+                    ),
+                )),
+                Err(cleanup_error) => Err(Status::new(
+                    config_error.code(),
+                    format!(
+                        "{}; cleanup also failed: {}",
+                        config_error.message(),
+                        cleanup_error.message()
+                    ),
+                )),
+            };
+        }
+
+        Ok(())
+    }
+
     fn prune_expired_device_sessions(&self) {
         let now = Instant::now();
         self.github_device_sessions
@@ -534,6 +574,7 @@ impl Supabased for SupabasedService {
             .await?;
 
         let branch_ref = validated_branch_ref(&branch_resp, &project.project_ref)?;
+        self.configure_branch_auth(project, &branch_ref).await?;
 
         db::record_branch(
             &self.db,
@@ -763,6 +804,7 @@ impl Supabased for SupabasedService {
             .create_branch(&project.project_ref, &branch_name)
             .await?;
         let branch_ref = validated_branch_ref(&branch_resp, &project.project_ref)?;
+        self.configure_branch_auth(project, &branch_ref).await?;
 
         db::record_demo_state(
             &self.db,
@@ -942,6 +984,9 @@ mod oauth_session_tests {
             project_ref: format!("{name}-ref"),
             demo,
             database_password_env: demo.then(|| format!("{}_DB_PASSWORD", name.to_uppercase())),
+            custom_access_token_hook_uri: None,
+            branch_auth_configure_timeout_seconds:
+                crate::config::DEFAULT_BRANCH_AUTH_CONFIGURE_TIMEOUT_SECONDS,
         }
     }
 

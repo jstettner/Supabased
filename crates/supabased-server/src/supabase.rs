@@ -1,10 +1,11 @@
 use serde::Deserialize;
 use serde_json::Value;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tonic::Status;
 
 const BASE_URL: &str = "https://api.supabase.com";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const AUTH_CONFIGURE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 fn create_branch_body(branch_name: &str) -> Value {
     serde_json::json!({
@@ -16,6 +17,13 @@ fn create_branch_body(branch_name: &str) -> Value {
 
 fn api_keys_url(branch_ref: &str) -> String {
     format!("{BASE_URL}/v1/projects/{branch_ref}/api-keys?reveal=true")
+}
+
+fn custom_access_token_hook_body(uri: &str) -> Value {
+    serde_json::json!({
+        "hook_custom_access_token_enabled": true,
+        "hook_custom_access_token_uri": uri,
+    })
 }
 
 pub struct SupabaseClient {
@@ -151,6 +159,51 @@ impl SupabaseClient {
             .map_err(|e| Status::internal(format!("failed to parse Supabase response: {e}")))
     }
 
+    /// Enable a custom access token hook on a branch project.
+    /// `PATCH /v1/projects/{branch_ref}/config/auth`
+    pub async fn configure_custom_access_token_hook(
+        &self,
+        branch_ref: &str,
+        uri: &str,
+        timeout: Duration,
+    ) -> Result<(), Status> {
+        let client = Self::http_client()?;
+        let url = format!("{BASE_URL}/v1/projects/{branch_ref}/config/auth");
+        let started_at = Instant::now();
+
+        loop {
+            let response = client
+                .patch(&url)
+                .header("Authorization", format!("Bearer {}", self.token))
+                .header("User-Agent", "supabased-server")
+                .json(&custom_access_token_hook_body(uri))
+                .send()
+                .await
+                .map_err(|e| Status::unavailable(format!("Supabase API request failed: {e}")))?;
+
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(Status::unauthenticated(
+                    "Supabase access token is invalid or expired",
+                ));
+            }
+
+            let status = response.status();
+            if status.is_success() {
+                return Ok(());
+            }
+
+            let body = response.text().await.unwrap_or_default();
+            if auth_configure_status_is_retryable(status) && started_at.elapsed() < timeout {
+                tokio::time::sleep(AUTH_CONFIGURE_RETRY_INTERVAL).await;
+                continue;
+            }
+
+            return Err(Status::internal(format!(
+                "Supabase API returned {status} while configuring auth hook: {body}"
+            )));
+        }
+    }
+
     /// Delete a single branch.
     /// `DELETE /v1/branches/{branch_ref}`
     /// NOTE: This is NOT `/v1/projects/{ref}/branches` which disables branching entirely.
@@ -208,6 +261,13 @@ impl SupabaseClient {
             .await
             .map_err(|e| Status::internal(format!("failed to parse Supabase response: {e}")))
     }
+}
+
+fn auth_configure_status_is_retryable(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::NOT_FOUND
+        || status == reqwest::StatusCode::CONFLICT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
 }
 
 fn select_modern_key<'a>(
@@ -308,6 +368,39 @@ mod tests {
             name: name.map(str::to_owned),
             key_type: key_type.map(str::to_owned),
         }
+    }
+
+    #[test]
+    fn custom_access_token_hook_body_enables_configured_uri() {
+        let body = custom_access_token_hook_body(
+            "pg-functions://postgres/public/custom_access_token_hook",
+        );
+
+        assert_eq!(body["hook_custom_access_token_enabled"], true);
+        assert_eq!(
+            body["hook_custom_access_token_uri"],
+            "pg-functions://postgres/public/custom_access_token_hook"
+        );
+        assert_eq!(body.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn retries_transient_auth_configuration_statuses() {
+        for status in [
+            reqwest::StatusCode::NOT_FOUND,
+            reqwest::StatusCode::CONFLICT,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            assert!(auth_configure_status_is_retryable(status));
+        }
+
+        assert!(!auth_configure_status_is_retryable(
+            reqwest::StatusCode::BAD_REQUEST
+        ));
+        assert!(!auth_configure_status_is_retryable(
+            reqwest::StatusCode::FORBIDDEN
+        ));
     }
 
     fn make_legacy_keys() -> Vec<ApiKeyResponse> {

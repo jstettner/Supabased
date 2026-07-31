@@ -11,5 +11,7 @@
 # [[projects]]
 # name = "staging"
 # ref = "abcdefghijklmnop"
+# custom_access_token_hook_uri = "pg-functions://postgres/public/custom_access_token_hook"
+# branch_auth_configure_timeout_seconds = 900
 # demo = true
 # database_password_env = "STAGING_DB_PASSWORD"

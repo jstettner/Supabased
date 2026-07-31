@@ -1,5 +1,11 @@
 use serde::Deserialize;
 
+pub const DEFAULT_BRANCH_AUTH_CONFIGURE_TIMEOUT_SECONDS: u64 = 15 * 60;
+
+fn default_branch_auth_configure_timeout_seconds() -> u64 {
+    DEFAULT_BRANCH_AUTH_CONFIGURE_TIMEOUT_SECONDS
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ServerConfig {
     pub projects: Vec<ProjectConfig>,
@@ -22,6 +28,9 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub demo: bool,
     pub database_password_env: Option<String>,
+    pub custom_access_token_hook_uri: Option<String>,
+    #[serde(default = "default_branch_auth_configure_timeout_seconds")]
+    pub branch_auth_configure_timeout_seconds: u64,
 }
 
 impl ServerConfig {
@@ -68,6 +77,26 @@ impl ProjectConfig {
             Err(format!("project entry in {path} has empty name"))
         } else if self.project_ref.is_empty() {
             Err(format!("project '{}' in {path} has empty ref", self.name))
+        } else if self
+            .custom_access_token_hook_uri
+            .as_deref()
+            .is_some_and(|uri| {
+                uri != uri.trim()
+                    || uri.is_empty()
+                    || !(uri.starts_with("pg-functions://")
+                        || uri.starts_with("https://")
+                        || uri.starts_with("http://"))
+            })
+        {
+            Err(format!(
+                "project '{}' in {path} has invalid custom_access_token_hook_uri",
+                self.name
+            ))
+        } else if self.branch_auth_configure_timeout_seconds == 0 {
+            Err(format!(
+                "project '{}' in {path} has branch_auth_configure_timeout_seconds=0",
+                self.name
+            ))
         } else if self.demo
             && self
                 .database_password_env
@@ -167,12 +196,18 @@ ref = "qrstuvwxyz123456"
                     project_ref: "abc".into(),
                     demo: false,
                     database_password_env: None,
+                    custom_access_token_hook_uri: None,
+                    branch_auth_configure_timeout_seconds:
+                        DEFAULT_BRANCH_AUTH_CONFIGURE_TIMEOUT_SECONDS,
                 },
                 ProjectConfig {
                     name: "prod".into(),
                     project_ref: "xyz".into(),
                     demo: false,
                     database_password_env: None,
+                    custom_access_token_hook_uri: None,
+                    branch_auth_configure_timeout_seconds:
+                        DEFAULT_BRANCH_AUTH_CONFIGURE_TIMEOUT_SECONDS,
                 },
             ],
         };
@@ -188,6 +223,9 @@ ref = "qrstuvwxyz123456"
                 project_ref: "abc".into(),
                 demo: false,
                 database_password_env: None,
+                custom_access_token_hook_uri: None,
+                branch_auth_configure_timeout_seconds:
+                    DEFAULT_BRANCH_AUTH_CONFIGURE_TIMEOUT_SECONDS,
             }],
         };
         assert!(config.resolve_project("unknown").is_none());
@@ -257,6 +295,89 @@ ref = "abcdefghijklmnop"
         let (config, _) = load_config(f.path().to_str().unwrap()).unwrap();
         assert!(!config.projects[0].demo);
         assert!(config.projects[0].database_password_env.is_none());
+        assert!(config.projects[0].custom_access_token_hook_uri.is_none());
+        assert_eq!(
+            config.projects[0].branch_auth_configure_timeout_seconds,
+            DEFAULT_BRANCH_AUTH_CONFIGURE_TIMEOUT_SECONDS
+        );
+    }
+
+    #[test]
+    fn parses_custom_access_token_hook_uri() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+custom_access_token_hook_uri = "pg-functions://postgres/public/custom_access_token_hook"
+"#
+        )
+        .unwrap();
+
+        let (config, _) = load_config(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(
+            config.projects[0].custom_access_token_hook_uri.as_deref(),
+            Some("pg-functions://postgres/public/custom_access_token_hook")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_custom_access_token_hook_uri() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+custom_access_token_hook_uri = "postgres/public/custom_access_token_hook"
+"#
+        )
+        .unwrap();
+
+        let err = load_config(f.path().to_str().unwrap()).unwrap_err();
+        assert!(err.contains("invalid custom_access_token_hook_uri"));
+    }
+
+    #[test]
+    fn parses_custom_branch_auth_configure_timeout() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+branch_auth_configure_timeout_seconds = 1800
+"#
+        )
+        .unwrap();
+
+        let (config, _) = load_config(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(
+            config.projects[0].branch_auth_configure_timeout_seconds,
+            1800
+        );
+    }
+
+    #[test]
+    fn rejects_zero_branch_auth_configure_timeout() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[projects]]
+name = "staging"
+ref = "abcdefghijklmnop"
+branch_auth_configure_timeout_seconds = 0
+"#
+        )
+        .unwrap();
+
+        let err = load_config(f.path().to_str().unwrap()).unwrap_err();
+        assert!(err.contains("branch_auth_configure_timeout_seconds=0"));
     }
 
     #[test]
@@ -331,6 +452,8 @@ database_password_env = "STAGING_DB_PASSWORD"
             project_ref: "ref123".into(),
             demo: true,
             database_password_env: Some(env_name.into()),
+            custom_access_token_hook_uri: None,
+            branch_auth_configure_timeout_seconds: DEFAULT_BRANCH_AUTH_CONFIGURE_TIMEOUT_SECONDS,
         };
 
         let conn = config.database_connection_for_ref("branch456").unwrap();
@@ -355,6 +478,8 @@ database_password_env = "STAGING_DB_PASSWORD"
             project_ref: "ref123".into(),
             demo: true,
             database_password_env: Some(env_name.into()),
+            custom_access_token_hook_uri: None,
+            branch_auth_configure_timeout_seconds: DEFAULT_BRANCH_AUTH_CONFIGURE_TIMEOUT_SECONDS,
         };
 
         let conn = config
@@ -373,6 +498,8 @@ database_password_env = "STAGING_DB_PASSWORD"
             project_ref: "abc".into(),
             demo: true,
             database_password_env: Some("SUPABASED_TEST_DB_PASSWORD_MISSING".into()),
+            custom_access_token_hook_uri: None,
+            branch_auth_configure_timeout_seconds: DEFAULT_BRANCH_AUTH_CONFIGURE_TIMEOUT_SECONDS,
         };
 
         let err = config.database_connection_for_ref("ref123").unwrap_err();
@@ -386,6 +513,8 @@ database_password_env = "STAGING_DB_PASSWORD"
             project_ref: "abc".into(),
             demo: true,
             database_password_env: None,
+            custom_access_token_hook_uri: None,
+            branch_auth_configure_timeout_seconds: DEFAULT_BRANCH_AUTH_CONFIGURE_TIMEOUT_SECONDS,
         };
 
         let err = config.database_connection_for_ref("ref123").unwrap_err();
